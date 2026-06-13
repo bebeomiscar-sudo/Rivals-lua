@@ -1,31 +1,49 @@
 --// ============================================================
---//  RIVALS SCRIPT - FULL BUILD
---//  Features: UI | Aimbot | AntiAim | Ragebot | Tracers | AC Bypass
+--//  RIVALS SCRIPT - FIXED VERSION
+--//  Fix: cloneref fallback + nil guards + safe requires
 --// ============================================================
 
 --// ============================================================
---//  SERVICES
+--//  SAFE EXECUTOR FUNCTION FALLBACKS
 --// ============================================================
 
-local Players            = cloneref(game:GetService("Players"))
-local RunService         = cloneref(game:GetService("RunService"))
-local UserInputService   = cloneref(game:GetService("UserInputService"))
-local TweenService       = cloneref(game:GetService("TweenService"))
-local HttpService        = cloneref(game:GetService("HttpService"))
-local ReplicatedStorage  = cloneref(game:GetService("ReplicatedStorage"))
-local CollectionService  = cloneref(game:GetService("CollectionService"))
-local LogService         = cloneref(game:GetService("LogService"))
-local ScriptContext      = cloneref(game:GetService("ScriptContext"))
-local Stats              = cloneref(game:GetService("Stats"))
-local StarterGui         = cloneref(game:GetService("StarterGui"))
+local cloneref         = cloneref         or function(x) return x end
+local hookfunction     = hookfunction     or function() end
+local newcclosure      = newcclosure      or function(f) return f end
+local getgc            = getgc            or function() return {} end
+local getconnections   = getconnections   or function() return {} end
+local getrenv          = getrenv          or function() return {} end
+local isfile           = isfile           or function() return false end
+local writefile        = writefile        or function() end
+local readfile         = readfile         or function() return "" end
+local keypress         = keypress         or nil
+local keyrelease       = keyrelease       or nil
+local firetouchinterest = firetouchinterest or nil
+local setfflag         = setfflag         or function() end
 
-local LocalPlayer  = Players.LocalPlayer
-local PlayerGui    = LocalPlayer:WaitForChild("PlayerGui")
-local Camera       = workspace.CurrentCamera
+-- LPH fallback
+if not LPH_NO_VIRTUALIZE then
+    LPH_NO_VIRTUALIZE = function(f) return f end
+end
 
 --// ============================================================
---//  EARLY CONNECTIONS TABLE
+--//  SERVICES (safe cloneref)
 --// ============================================================
+
+local Players           = cloneref(game:GetService("Players"))
+local RunService        = cloneref(game:GetService("RunService"))
+local UserInputService  = cloneref(game:GetService("UserInputService"))
+local TweenService      = cloneref(game:GetService("TweenService"))
+local HttpService       = cloneref(game:GetService("HttpService"))
+local ReplicatedStorage = cloneref(game:GetService("ReplicatedStorage"))
+local CollectionService = cloneref(game:GetService("CollectionService"))
+local LogService        = cloneref(game:GetService("LogService"))
+local ScriptContext     = cloneref(game:GetService("ScriptContext"))
+local Stats             = cloneref(game:GetService("Stats"))
+
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui   = LocalPlayer:WaitForChild("PlayerGui")
+local Camera      = workspace.CurrentCamera
 
 local earlyConnections = {}
 
@@ -36,15 +54,37 @@ local earlyConnections = {}
 local function instanceSafeRequire(obj, timeout)
     if not obj then return nil end
     local ok, result = pcall(require, obj)
-    if ok then return result end
+    if ok and result then return result end
     local t = tick()
-    timeout = timeout or 10
+    timeout = timeout or 5
     while tick() - t < timeout do
         ok, result = pcall(require, obj)
-        if ok then return result end
-        task.wait(0.1)
+        if ok and result then return result end
+        task.wait(0.2)
     end
     return nil
+end
+
+--// ============================================================
+--//  SAFE FIND HELPERS
+--// ============================================================
+
+local function safeFind(parent, ...)
+    if not parent then return nil end
+    local current = parent
+    for _, name in ipairs({...}) do
+        if not current then return nil end
+        current = current:FindFirstChild(name)
+    end
+    return current
+end
+
+local function safeWaitFor(parent, name, timeout)
+    if not parent then return nil end
+    local ok, result = pcall(function()
+        return parent:WaitForChild(name, timeout or 5)
+    end)
+    return ok and result or nil
 end
 
 --// ============================================================
@@ -54,7 +94,10 @@ end
 local function worldToScreen(worldPos, cam)
     cam = cam or workspace.CurrentCamera
     if not cam or not worldPos then return nil, false end
-    local v, onScreen = cam:WorldToViewportPoint(worldPos)
+    local ok, v, onScreen = pcall(function()
+        return cam:WorldToViewportPoint(worldPos)
+    end)
+    if not ok then return nil, false end
     if not onScreen or v.Z <= 0 then return v, false end
     return Vector2.new(v.X, v.Y), true
 end
@@ -71,15 +114,14 @@ local function getAspectStretch()
     if not cam then return 1 end
     local vp = cam.ViewportSize
     if vp.Y == 0 then return 1 end
-    local aspect = vp.X / vp.Y
-    local expected = 16 / 9
-    return aspect / expected
+    return (vp.X / vp.Y) / (16/9)
 end
 
 local function getUnstretchedCameraCFrame(cam)
     cam = cam or workspace.CurrentCamera
-    if not cam then return nil end
-    local cf = cam.CFrame
+    if not cam then return CFrame.new() end
+    local ok, cf = pcall(function() return cam.CFrame end)
+    if not ok then return CFrame.new() end
     if getAspectStretch() == 1 then return cf end
     local pos   = cf.Position
     local look  = cf.LookVector
@@ -102,17 +144,19 @@ local isMobile = UserInputService.TouchEnabled and not UserInputService.Keyboard
 --// ============================================================
 
 local function Tween(obj, props, duration, style, direction)
-    local t = TweenService:Create(
-        obj,
-        TweenInfo.new(
-            duration or 0.25,
-            style or Enum.EasingStyle.Quart,
-            direction or Enum.EasingDirection.Out
-        ),
-        props
-    )
-    t:Play()
-    return t
+    if not obj or not obj.Parent then return end
+    local ok, t = pcall(function()
+        return TweenService:Create(
+            obj,
+            TweenInfo.new(
+                duration or 0.25,
+                style or Enum.EasingStyle.Quart,
+                direction or Enum.EasingDirection.Out
+            ),
+            props
+        )
+    end)
+    if ok and t then t:Play() return t end
 end
 
 local function TweenQuick(obj, props)
@@ -126,7 +170,6 @@ end
 local ConfigPath = "RivalsConfig.json"
 
 local DefaultConfig = {
-    -- Aimbot
     AimbotEnabled      = false,
     AimbotFOV          = 120,
     AimbotSmoothing    = 2,
@@ -135,8 +178,6 @@ local DefaultConfig = {
     AimbotShowFOV      = false,
     AimbotFollowMuzzle = false,
     AimbotKeyMode      = isMobile and "always" or "toggle",
-
-    -- FOV Circle
     FOVOutlineThickness    = 1.5,
     FOVOutlineTransparency = 0,
     FOVFilledEnabled       = false,
@@ -145,8 +186,6 @@ local DefaultConfig = {
     FOVAnimSpeed           = 1,
     FOVSpin                = false,
     FOVSpinSpeed           = 1,
-
-    -- Anti Aim
     AntiAimEnabled    = false,
     AntiAimYaw        = "none",
     AntiAimPitch      = "none",
@@ -158,8 +197,6 @@ local DefaultConfig = {
     AntiAimMaxAngle   = 60,
     AntiAimRandom     = false,
     AntiAimUnderground = false,
-
-    -- Ragebot
     RagebotEnabled     = false,
     RagebotAuto        = false,
     RagebotAutoShoot   = true,
@@ -177,17 +214,13 @@ local DefaultConfig = {
     RagebotVoidShootMax = 1,
     RagebotVoidHideMin  = 1,
     RagebotVoidHideMax  = 1,
-
-    -- Tracers
     TracerEnabled   = true,
     TracerStyle     = "Line",
     TracerDuration  = 3,
     TracerSize      = 1,
     TracerFadeTime  = 0.5,
     TracerLerp      = 0,
-
-    -- Visuals
-    HitNotifyEnabled = true,
+    HitNotifyEnabled  = true,
     RageStatusEnabled = false,
 }
 
@@ -203,11 +236,7 @@ local function SaveConfig()
     local ok, err = pcall(function()
         writefile(ConfigPath, HttpService:JSONEncode(Config))
     end)
-    if ok then
-        print("✅ Config Saved!")
-    else
-        warn("❌ Save Failed: " .. tostring(err))
-    end
+    print(ok and "✅ Config Saved!" or "❌ Save Failed: " .. tostring(err))
 end
 
 local function LoadConfig()
@@ -219,6 +248,10 @@ local function LoadConfig()
     end)
     if ok and result then
         for k, v in pairs(result) do Config[k] = v end
+        -- Fill missing keys
+        for k, v in pairs(DefaultConfig) do
+            if Config[k] == nil then Config[k] = v end
+        end
         print("✅ Config Loaded!")
         return true
     else
@@ -231,79 +264,95 @@ end
 LoadConfig()
 
 --// ============================================================
---//  ANTI CHEAT BYPASS
+--//  ANTI CHEAT BYPASS (all wrapped in pcall + nil checks)
 --// ============================================================
 
 -- 1. Weak Table Spoof
-pcall(function()
-    if typeof(hookfunction) ~= "function" or typeof(getrenv) ~= "function" then return end
-    local renv = getrenv()
-    if not renv or not renv.setmetatable then return end
-    local originalSetMetatable = hookfunction(
-        renv.setmetatable,
-        newcclosure(function(targetTable, metaTable)
-            local resTable, resMeta
-            local spoofed = false
-            pcall(function()
-                if metaTable and type(metaTable) == "table" and rawget(metaTable, "__mode") then
-                    local weakMode = rawget(metaTable, "__mode")
-                    if weakMode == "kv" or weakMode == "v" or weakMode == "k" then
-                        local stackTrace = debug.traceback()
-                        if stackTrace:find("MiscellaneousController")
-                            or stackTrace:find("LocalScript3")
-                            or stackTrace:find("CameraSecurity")
-                            or stackTrace:find("AnalyticsPipelineController") then
-                            resTable, resMeta = {1, 2, 3}, {}
-                            spoofed = true
+task.spawn(function()
+    pcall(function()
+        if typeof(hookfunction) ~= "function" then return end
+        if typeof(getrenv) ~= "function" then return end
+        local ok2, renv = pcall(getrenv)
+        if not ok2 or not renv or not renv.setmetatable then return end
+        hookfunction(
+            renv.setmetatable,
+            newcclosure(function(targetTable, metaTable)
+                local resTable, resMeta, spoofed = nil, nil, false
+                pcall(function()
+                    if metaTable and type(metaTable) == "table" and rawget(metaTable, "__mode") then
+                        local weakMode = rawget(metaTable, "__mode")
+                        if weakMode == "kv" or weakMode == "v" or weakMode == "k" then
+                            local ok3, st = pcall(debug.traceback)
+                            if ok3 and type(st) == "string" then
+                                if st:find("MiscellaneousController")
+                                    or st:find("LocalScript3")
+                                    or st:find("CameraSecurity")
+                                    or st:find("AnalyticsPipelineController") then
+                                    resTable = {1,2,3}
+                                    resMeta  = {}
+                                    spoofed  = true
+                                end
+                            end
                         end
                     end
+                end)
+                if spoofed then
+                    local ok4, r = pcall(rawset(getmetatable, "__index", nil) or function() end)
+                    return table.pack(pcall(function()
+                        return (renv.setmetatable)(resTable, resMeta)
+                    end))[2]
                 end
+                local ok5, r2 = pcall(function()
+                    return (renv.setmetatable)(targetTable, metaTable)
+                end)
+                return r2
             end)
-            if spoofed then
-                return originalSetMetatable(resTable, resMeta)
-            end
-            return originalSetMetatable(targetTable, metaTable)
-        end)
-    )
+        )
+    end)
 end)
 
 -- 2. Main AC Disabler
 task.spawn(function()
     while not LocalPlayer do task.wait() end
-    task.wait(1.0)
-    local success, err = pcall(function()
-        assert(getgc, "missing getgc")
-        assert(debug and debug.info, "missing debug.info")
-        assert(hookfunction, "missing hookfunction")
-        assert(getconnections, "missing getconnections")
-        assert(newcclosure, "missing newcclosure")
+    task.wait(1.5)
+
+    pcall(function()
+        if typeof(getgc) ~= "function" then return end
+        if typeof(hookfunction) ~= "function" then return end
+        if typeof(getconnections) ~= "function" then return end
 
         -- Hang AnalyticsPipelineController
-        task.spawn(function()
+        task.spawn(LPH_NO_VIRTUALIZE(function()
             local hooked = 0
-            for _, v in pairs(getgc(true)) do
+            local ok, gc = pcall(getgc, true)
+            if not ok or not gc then return end
+            for _, v in pairs(gc) do
                 if typeof(v) == "function" then
                     local ok2, src = pcall(debug.info, v, "s")
                     if ok2 and type(src) == "string" and src:find("AnalyticsPipelineController") then
-                        hooked += 1
-                        hookfunction(v, newcclosure(function() return task.wait(9e9) end))
+                        pcall(function()
+                            hookfunction(v, newcclosure(function() return task.wait(9e9) end))
+                            hooked += 1
+                        end)
                     end
                 end
             end
             print("Hanged " .. hooked .. " AC functions")
-        end)
+        end))
 
         -- Hook AnalyticsPipeline Remote
         task.spawn(function()
-            local ok2, remote = pcall(function()
-                return ReplicatedStorage
-                    :WaitForChild("Remotes")
-                    :WaitForChild("AnalyticsPipeline")
-                    :WaitForChild("RemoteEvent")
-            end)
-            if ok2 and remote and remote.OnClientEvent then
+            pcall(function()
+                local remotes = safeWaitFor(ReplicatedStorage, "Remotes", 5)
+                if not remotes then return end
+                local ap = safeWaitFor(remotes, "AnalyticsPipeline", 5)
+                if not ap then return end
+                local remote = safeWaitFor(ap, "RemoteEvent", 5)
+                if not remote or not remote.OnClientEvent then return end
                 local hooked = 0
-                for _, conn in pairs(getconnections(remote.OnClientEvent)) do
+                local ok2, conns = pcall(getconnections, remote.OnClientEvent)
+                if not ok2 or not conns then return end
+                for _, conn in pairs(conns) do
                     if conn and conn.Function then
                         if pcall(hookfunction, conn.Function, newcclosure(function() end)) then
                             hooked += 1
@@ -311,127 +360,166 @@ task.spawn(function()
                     end
                 end
                 print("Hooked " .. hooked .. " AC remotes")
-            end
+            end)
         end)
 
         -- Suppress LogService
         task.spawn(function()
-            local hooked = 0
-            for _, conn in pairs(getconnections(LogService.MessageOut)) do
-                if conn and conn.Function then
-                    if pcall(hookfunction, conn.Function, newcclosure(function() end)) then
-                        hooked += 1
+            pcall(function()
+                local ok2, conns = pcall(getconnections, LogService.MessageOut)
+                if not ok2 or not conns then return end
+                local hooked = 0
+                for _, conn in pairs(conns) do
+                    if conn and conn.Function then
+                        if pcall(hookfunction, conn.Function, newcclosure(function() end)) then
+                            hooked += 1
+                        end
                     end
                 end
-            end
-            print("Hooked " .. hooked .. " MessageOut")
-        end)
-
-        -- Disable ScriptContext errors
-        task.spawn(function()
-            local hooked = 0
-            for _, conn in pairs(getconnections(ScriptContext.Error)) do
-                if pcall(function() conn:Disable() end) then hooked += 1 end
-            end
-            print("Hooked " .. hooked .. " error connections")
-            pcall(function()
-                hookfunction(ScriptContext.Error.Connect, newcclosure(function() return nil end))
+                print("Hooked " .. hooked .. " MessageOut")
             end)
         end)
 
-        -- Prevent Kick
+        -- Disable ScriptContext.Error
         task.spawn(function()
-            for _, name in ipairs({"Kick", "kick"}) do
-                local fn = LocalPlayer[name]
-                if type(fn) == "function" then
-                    local oldkick
-                    oldkick = hookfunction(fn, newcclosure(function(self, ...)
-                        if self == LocalPlayer then return end
-                        return oldkick(self, ...)
-                    end))
+            pcall(function()
+                local ok2, conns = pcall(getconnections, ScriptContext.Error)
+                if not ok2 or not conns then return end
+                local hooked = 0
+                for _, conn in pairs(conns) do
+                    if pcall(function() conn:Disable() end) then hooked += 1 end
                 end
-            end
+                print("Disabled " .. hooked .. " error connections")
+                pcall(function()
+                    hookfunction(ScriptContext.Error.Connect, newcclosure(function() return nil end))
+                end)
+            end)
+        end)
+
+        -- Anti Kick
+        task.spawn(function()
+            pcall(function()
+                for _, name in ipairs({"Kick","kick"}) do
+                    local ok2, fn = pcall(function() return LocalPlayer[name] end)
+                    if ok2 and type(fn) == "function" then
+                        local oldkick
+                        pcall(function()
+                            oldkick = hookfunction(fn, newcclosure(function(self, ...)
+                                if self == LocalPlayer then return end
+                                return oldkick(self, ...)
+                            end))
+                        end)
+                    end
+                end
+            end)
         end)
     end)
-
-    if not success then
-        warn("AC Bypass failed: " .. tostring(err))
-    else
-        print("✅ AC Bypass Success")
-    end
 end)
 
 -- 3. OOB Bypass
 task.spawn(function()
     while not LocalPlayer do task.wait() end
-    task.wait(1.5)
+    task.wait(2)
     pcall(function()
         local CS = CollectionService
         local function patchTable(tbl)
             if type(tbl) ~= "table" then return end
             if rawget(tbl, "IsWithinOOBPart") or rawget(tbl, "OOB_DEFAULT_WARN_DELAY") then
-                tbl.IsWithinOOBPart      = function() return nil end
-                tbl.GetOOBWarnDelay      = function() return math.huge end
-                tbl.GetOOBKillDelay      = function() return math.huge end
-                tbl.OOB_DEFAULT_WARN_DELAY = math.huge
-                tbl.OOB_DEFAULT_KILL_DELAY = math.huge
+                pcall(function()
+                    tbl.IsWithinOOBPart      = function() return nil end
+                    tbl.GetOOBWarnDelay      = function() return math.huge end
+                    tbl.GetOOBKillDelay      = function() return math.huge end
+                    tbl.OOB_DEFAULT_WARN_DELAY = math.huge
+                    tbl.OOB_DEFAULT_KILL_DELAY = math.huge
+                end)
                 if rawget(tbl, "GetSpread") and not rawget(tbl, "_patchedSpread") then
-                    local oldGetSpread = tbl.GetSpread
-                    tbl.GetSpread = function(self, ...)
-                        return CFrame.identity
-                    end
-                    tbl._patchedSpread = true
+                    pcall(function()
+                        tbl.GetSpread = function() return CFrame.identity end
+                        tbl._patchedSpread = true
+                    end)
                 end
             end
             if rawget(tbl, "IsWithinTaggedParts") and not rawget(tbl, "_patchedOOB") then
-                local orig = tbl.IsWithinTaggedParts
-                tbl.IsWithinTaggedParts = function(self, tag, ...)
-                    if tag == "OutOfBoundsPart" then return {} end
-                    if tag == "OutOfBoundsSafePart" then return true end
-                    return orig(self, tag, ...)
-                end
-                tbl._patchedOOB = true
+                pcall(function()
+                    local orig = tbl.IsWithinTaggedParts
+                    tbl.IsWithinTaggedParts = function(self, tag, ...)
+                        if tag == "OutOfBoundsPart" then return {} end
+                        if tag == "OutOfBoundsSafePart" then return true end
+                        return orig(self, tag, ...)
+                    end
+                    tbl._patchedOOB = true
+                end)
             end
             if rawget(tbl, "IsOutOfBounds") and rawget(tbl, "_CheckKill") then
-                tbl.IsOutOfBounds = function() return nil end
-                tbl.Update        = function() end
-                tbl._CheckKill    = function() return false end
+                pcall(function()
+                    tbl.IsOutOfBounds = function() return nil end
+                    tbl.Update        = function() end
+                    tbl._CheckKill    = function() return false end
+                end)
             end
         end
 
-        pcall(function() patchTable(require(ReplicatedStorage.Modules.Utility)) end)
-        pcall(function() patchTable(require(ReplicatedStorage.Modules.GameplayUtility)) end)
+        local mods = safeFind(ReplicatedStorage, "Modules")
+        if not mods then return end
+
         pcall(function()
-            local m = ReplicatedStorage.Modules:FindFirstChild("OutOfBoundsMachine")
+            local m = mods:FindFirstChild("Utility")
+            if m then patchTable(require(m)) end
+        end)
+        pcall(function()
+            local m = mods:FindFirstChild("GameplayUtility")
+            if m then patchTable(require(m)) end
+        end)
+        pcall(function()
+            local m = mods:FindFirstChild("OutOfBoundsMachine")
             if m then patchTable(require(m)) end
         end)
 
-        for _, p in pairs(CS:GetTagged("OutOfBoundsPart")) do
-            CS:RemoveTag(p, "OutOfBoundsPart")
-        end
-        for _, p in pairs(CS:GetTagged("OutOfBoundsSafePart")) do
-            CS:RemoveTag(p, "OutOfBoundsSafePart")
-        end
-
-        table.insert(earlyConnections, CS:GetInstanceAddedSignal("OutOfBoundsPart"):Connect(function(p)
-            pcall(CS.RemoveTag, CS, p, "OutOfBoundsPart")
-        end))
-        table.insert(earlyConnections, CS:GetInstanceAddedSignal("OutOfBoundsSafePart"):Connect(function(p)
-            pcall(CS.RemoveTag, CS, p, "OutOfBoundsSafePart")
-        end))
+        pcall(function()
+            for _, p in pairs(CS:GetTagged("OutOfBoundsPart")) do
+                CS:RemoveTag(p, "OutOfBoundsPart")
+            end
+            for _, p in pairs(CS:GetTagged("OutOfBoundsSafePart")) do
+                CS:RemoveTag(p, "OutOfBoundsSafePart")
+            end
+            table.insert(earlyConnections, CS:GetInstanceAddedSignal("OutOfBoundsPart"):Connect(function(p)
+                pcall(CS.RemoveTag, CS, p, "OutOfBoundsPart")
+            end))
+            table.insert(earlyConnections, CS:GetInstanceAddedSignal("OutOfBoundsSafePart"):Connect(function(p)
+                pcall(CS.RemoveTag, CS, p, "OutOfBoundsSafePart")
+            end))
+        end)
     end)
 end)
 
 --// ============================================================
---//  MODULE REQUIRES
+--//  MODULE REQUIRES (fully safe)
 --// ============================================================
 
-local Modules = {}
+local Modules = {
+    enums      = nil,
+    fighter    = nil,
+    camcontrol = nil,
+    utility    = nil,
+}
+
 task.spawn(function()
-    Modules.enums      = instanceSafeRequire(ReplicatedStorage.Modules.EnumLibrary)
-    Modules.fighter    = instanceSafeRequire(LocalPlayer.PlayerScripts.Controllers.FighterController)
-    Modules.camcontrol = instanceSafeRequire(LocalPlayer.PlayerScripts.Controllers.CameraController)
-    Modules.utility    = instanceSafeRequire(ReplicatedStorage.Modules.Utility)
+    task.wait(1)
+    pcall(function()
+        local mods = safeFind(ReplicatedStorage, "Modules")
+        if mods then
+            Modules.enums   = instanceSafeRequire(mods:FindFirstChild("EnumLibrary"), 5)
+            Modules.utility = instanceSafeRequire(mods:FindFirstChild("Utility"), 5)
+        end
+    end)
+    pcall(function()
+        local scripts = safeFind(LocalPlayer, "PlayerScripts")
+        if not scripts then return end
+        local ctrls = safeFind(scripts, "Controllers")
+        if not ctrls then return end
+        Modules.fighter    = instanceSafeRequire(ctrls:FindFirstChild("FighterController"), 5)
+        Modules.camcontrol = instanceSafeRequire(ctrls:FindFirstChild("CameraController"), 5)
+    end)
 end)
 
 --// ============================================================
@@ -443,44 +531,43 @@ local MELEE_NMS = {
     ["Gunblade"]=true,["Katana"]=true,["Knife"]=true,["Scythe"]=true,["Trowel"]=true,
 }
 local INFINITE_AMMO = {["Energy Rifle"]=true,["Energy Pistols"]=true}
-local SLOTS = {primary=1, secondary=2, melee=3}
 
 local function getweapon()
-    local vm = workspace:FindFirstChild("ViewModels")
-    if not vm then return nil end
-    local fp = vm:FindFirstChild("FirstPerson")
-    if not fp then return nil end
-    for _, child in ipairs(fp:GetChildren()) do
-        local parts = {}
-        for part in child.Name:gmatch("[^-]+") do
-            table.insert(parts, part:match("^%s*(.-)%s*$"))
+    local ok, result = pcall(function()
+        local vm = workspace:FindFirstChild("ViewModels")
+        if not vm then return nil end
+        local fp = vm:FindFirstChild("FirstPerson")
+        if not fp then return nil end
+        for _, child in ipairs(fp:GetChildren()) do
+            local parts = {}
+            for part in child.Name:gmatch("[^-]+") do
+                table.insert(parts, part:match("^%s*(.-)%s*$"))
+            end
+            if #parts >= 2 then return parts[2] end
         end
-        if #parts >= 2 then return parts[2] end
-    end
-    return nil
+        return nil
+    end)
+    return ok and result or nil
 end
 
 local function muzzlepos()
-    local vm = workspace:FindFirstChild("ViewModels")
-    if not vm then return nil end
-    local fp = vm:FindFirstChild("FirstPerson")
-    if not fp then return nil end
-    for _, model in pairs(fp:GetChildren()) do
-        if model.Name:find(LocalPlayer.Name) then
-            local iv = model:FindFirstChild("ItemVisual")
-            if iv then
-                local body = iv:FindFirstChild("Body")
-                if body then
-                    local bp = body:FindFirstChild("BodyPrimary")
-                    if bp then
-                        local muzzle = bp:FindFirstChild("_muzzle")
-                        if muzzle then return muzzle.WorldPosition end
-                    end
-                end
+    local ok, result = pcall(function()
+        local vm = workspace:FindFirstChild("ViewModels")
+        if not vm then return nil end
+        local fp = vm:FindFirstChild("FirstPerson")
+        if not fp then return nil end
+        for _, model in pairs(fp:GetChildren()) do
+            if model.Name:find(LocalPlayer.Name) then
+                local iv = model:FindFirstChild("ItemVisual")
+                local body = iv and iv:FindFirstChild("Body")
+                local bp   = body and body:FindFirstChild("BodyPrimary")
+                local muzzle = bp and bp:FindFirstChild("_muzzle")
+                if muzzle then return muzzle.WorldPosition end
             end
         end
-    end
-    return nil
+        return nil
+    end)
+    return ok and result or nil
 end
 
 local function isInfiniteWeapon()
@@ -492,15 +579,13 @@ local function isSling(weapon)
     return weapon and weapon:lower():find("slingshot", 1, true) ~= nil
 end
 
-local function meleeNm(nm)
-    if type(nm) ~= "string" or nm == "" then return false end
-    if nm:lower():find("melee", 1, true) then return true end
-    return MELEE_NMS[nm] == true
-end
+--// ============================================================
+--//  FOV GUI
+--// ============================================================
 
---// ============================================================
---//  FOV GUI (for aimbot circle)
---// ============================================================
+if PlayerGui:FindFirstChild("RivalsFOVGui") then
+    PlayerGui:FindFirstChild("RivalsFOVGui"):Destroy()
+end
 
 local fovScreenGui = Instance.new("ScreenGui")
 fovScreenGui.Name            = "RivalsFOVGui"
@@ -543,16 +628,15 @@ local function buildfov(name, cfg)
     fill.Visible                = false
     fill.ZIndex                 = 1
     fill.Parent                 = container
-    local fillCorner = Instance.new("UICorner")
-    fillCorner.CornerRadius = UDim.new(1,0)
-    fillCorner.Parent = fill
+    Instance.new("UICorner", fill).CornerRadius = UDim.new(1,0)
+
     local fillgrad = Instance.new("UIGradient")
     fillgrad.Color = ColorSequence.new({
         ColorSequenceKeypoint.new(0, cfg.FilledColor1),
         ColorSequenceKeypoint.new(1, cfg.FilledColor2),
     })
     fillgrad.Rotation = cfg.FilledRotation
-    fillgrad.Parent = fill
+    fillgrad.Parent   = fill
 
     local outline = Instance.new("Frame")
     outline.Size                   = UDim2.new(1,0,1,0)
@@ -560,27 +644,33 @@ local function buildfov(name, cfg)
     outline.BorderSizePixel        = 0
     outline.ZIndex                 = 2
     outline.Parent                 = container
-    local outlineCorner = Instance.new("UICorner")
-    outlineCorner.CornerRadius = UDim.new(1,0)
-    outlineCorner.Parent = outline
+    Instance.new("UICorner", outline).CornerRadius = UDim.new(1,0)
+
     local stroke = Instance.new("UIStroke")
     stroke.Color           = Color3.new(1,1,1)
     stroke.Thickness       = cfg.OutlineThickness
     stroke.Transparency    = cfg.OutlineTransparency
     stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Parent = outline
+    stroke.Parent          = outline
+
     local strokegrad = Instance.new("UIGradient")
     strokegrad.Color = ColorSequence.new({
         ColorSequenceKeypoint.new(0, cfg.OutlineColor1),
         ColorSequenceKeypoint.new(1, cfg.OutlineColor2),
     })
     strokegrad.Rotation = cfg.OutlineRotation
-    strokegrad.Parent = stroke
+    strokegrad.Parent   = stroke
 
-    return {container=container, fill=fill, fillgrad=fillgrad, stroke=stroke, strokegrad=strokegrad}
+    return {
+        container  = container,
+        fill       = fill,
+        fillgrad   = fillgrad,
+        stroke     = stroke,
+        strokegrad = strokegrad,
+    }
 end
 
-local aFOV            = buildfov("AimbotFOV", aimbotFOVCfg)
+local aFOV               = buildfov("AimbotFOV", aimbotFOVCfg)
 local aimbotFOVContainer = aFOV.container
 local aimbotFOVFill      = aFOV.fill
 local aimbotFOVFillGrad  = aFOV.fillgrad
@@ -605,6 +695,23 @@ local aimbot = {
     smoothCF      = nil,
 }
 
+local camController = nil
+
+task.spawn(function()
+    task.wait(2)
+    pcall(function()
+        local scripts = safeFind(LocalPlayer, "PlayerScripts")
+        if not scripts then return end
+        local ctrls = safeFind(scripts, "Controllers")
+        if not ctrls then return end
+        local cm = ctrls:FindFirstChild("CameraController")
+        if cm and cm:IsA("ModuleScript") then
+            local ok, result = pcall(require, cm)
+            if ok then camController = result end
+        end
+    end)
+end)
+
 local function aimbotfovcenter()
     if aimbot.followMuzzle then
         local s = screenpos2(muzzlepos())
@@ -615,8 +722,9 @@ end
 
 local function getAimbotScreenPoint()
     if aimbot.followMuzzle then return aimbotfovcenter() end
-    local loc = UserInputService:GetMouseLocation()
-    return Vector2.new(loc.X, loc.Y)
+    local ok, loc = pcall(function() return UserInputService:GetMouseLocation() end)
+    if ok and loc then return Vector2.new(loc.X, loc.Y) end
+    return screenCenter(Camera)
 end
 
 local function getAimbotLerpAlpha(dt)
@@ -644,109 +752,105 @@ local function clearAimbotLock()
 end
 
 local function closesttocursor()
-    local best, bestDist = nil, aimbot.fovRadius
-    local mp = getAimbotScreenPoint()
-    if not mp then return nil end
-    local cam = workspace.CurrentCamera
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer and p.Character then
-            local part = p.Character:FindFirstChild(aimbot.targetPart)
-            if part and part:IsDescendantOf(workspace) then
-                local scr, on = worldToScreen(part.Position, cam)
-                if on then
-                    local dx = scr.X - mp.X
-                    local dy = scr.Y - mp.Y
-                    local dist = math.sqrt(dx*dx + dy*dy)
-                    if dist < bestDist then
-                        bestDist = dist
-                        best = part
+    local ok2, result = pcall(function()
+        local best, bestDist = nil, aimbot.fovRadius
+        local mp  = getAimbotScreenPoint()
+        if not mp then return nil end
+        local cam = workspace.CurrentCamera
+        for _, p in ipairs(Players:GetPlayers()) do
+            if p ~= LocalPlayer and p.Character then
+                local part = p.Character:FindFirstChild(aimbot.targetPart)
+                if part and part:IsDescendantOf(workspace) then
+                    local scr, on = worldToScreen(part.Position, cam)
+                    if on and scr then
+                        local dx   = scr.X - mp.X
+                        local dy   = scr.Y - mp.Y
+                        local dist = math.sqrt(dx*dx + dy*dy)
+                        if dist < bestDist then
+                            bestDist = dist
+                            best     = part
+                        end
                     end
                 end
             end
         end
-    end
-    return best
+        return best
+    end)
+    return ok2 and result or nil
 end
 
-local AIMBOT_BIND    = "RivalsAimbotUpdate"
-local aimbotConn     = nil
+local AIMBOT_BIND     = "RivalsAimbotUpdate"
+local aimbotConn      = nil
 local aimbotUsingBind = false
-local camController  = nil
-
-task.spawn(function()
-    local ok, result = pcall(function()
-        local ctrl = LocalPlayer.PlayerScripts:WaitForChild("Controllers", 10)
-        local cm = ctrl:FindFirstChild("CameraController")
-        if cm and cm:IsA("ModuleScript") then
-            return require(cm)
-        end
-    end)
-    if ok and result then camController = result end
-end)
 
 local function stepAimbot(dt)
-    dt = dt or (1/240)
     if not aimbot.enabled then clearAimbotLock() return end
-    local cam = workspace.CurrentCamera
-    if not cam then return end
-    Camera = cam
-    if not aimbot.lockedTarget then
-        aimbot.lockedTarget = closesttocursor()
-        aimbot.smoothCF = getUnstretchedCameraCFrame(cam)
-        if not aimbot.lockedTarget then return end
-    end
-    if not aimbot.lockedTarget.Parent or not aimbot.lockedTarget:IsDescendantOf(workspace) then
-        clearAimbotLock() return
-    end
-    local myChar = LocalPlayer.Character
-    if not myChar then return end
-    if not myChar:FindFirstChild("Head") then clearAimbotLock() return end
-    if not camController then return end
-    if not aimbot.smoothCF then
-        aimbot.smoothCF = getUnstretchedCameraCFrame(cam)
-    end
-    local lookCF = CFrame.lookAt(cam.CFrame.Position, aimbot.lockedTarget.Position)
-    local alpha  = getAimbotLerpAlpha(dt)
-    aimbot.smoothCF = aimbot.smoothCF:Lerp(lookCF, alpha)
-    if camController.MimicRotation then
-        pcall(camController.MimicRotation, camController, aimbot.smoothCF)
-    end
+    pcall(function()
+        dt = dt or (1/240)
+        local cam = workspace.CurrentCamera
+        if not cam then return end
+        Camera = cam
+        if not aimbot.lockedTarget then
+            aimbot.lockedTarget = closesttocursor()
+            aimbot.smoothCF     = getUnstretchedCameraCFrame(cam)
+            if not aimbot.lockedTarget then return end
+        end
+        if not aimbot.lockedTarget.Parent or not aimbot.lockedTarget:IsDescendantOf(workspace) then
+            clearAimbotLock() return
+        end
+        local myChar = LocalPlayer.Character
+        if not myChar then return end
+        if not myChar:FindFirstChild("Head") then clearAimbotLock() return end
+        if not camController then return end
+        if not aimbot.smoothCF then
+            aimbot.smoothCF = getUnstretchedCameraCFrame(cam)
+        end
+        local lookCF = CFrame.lookAt(cam.CFrame.Position, aimbot.lockedTarget.Position)
+        local alpha  = getAimbotLerpAlpha(dt)
+        aimbot.smoothCF = aimbot.smoothCF:Lerp(lookCF, alpha)
+        if camController.MimicRotation then
+            pcall(camController.MimicRotation, camController, aimbot.smoothCF)
+        end
+    end)
 end
 
 local function updaimbot()
-    if aimbotConn then aimbotConn:Disconnect() aimbotConn = nil end
-    if aimbotUsingBind then
-        pcall(RunService.UnbindFromRenderStep, RunService, AIMBOT_BIND)
-        aimbotUsingBind = false
-    end
-    aimbotFOVContainer.Visible = aimbot.showFov
-    if not aimbot.enabled then clearAimbotLock() return end
-    local ok = pcall(function()
-        RunService:UnbindFromRenderStep(AIMBOT_BIND)
-        RunService:BindToRenderStep(AIMBOT_BIND, Enum.RenderPriority.Camera.Value+1, stepAimbot)
+    pcall(function()
+        if aimbotConn then aimbotConn:Disconnect() aimbotConn = nil end
+        if aimbotUsingBind then
+            pcall(RunService.UnbindFromRenderStep, RunService, AIMBOT_BIND)
+            aimbotUsingBind = false
+        end
+        aimbotFOVContainer.Visible = aimbot.showFov
+        if not aimbot.enabled then clearAimbotLock() return end
+        local ok = pcall(function()
+            RunService:UnbindFromRenderStep(AIMBOT_BIND)
+            RunService:BindToRenderStep(AIMBOT_BIND, Enum.RenderPriority.Camera.Value+1, stepAimbot)
+        end)
+        if ok then
+            aimbotUsingBind = true
+        else
+            aimbotConn = RunService.RenderStepped:Connect(stepAimbot)
+        end
     end)
-    if ok then
-        aimbotUsingBind = true
-    else
-        aimbotConn = RunService.RenderStepped:Connect(stepAimbot)
-    end
 end
 
--- FOV Render
 RunService.RenderStepped:Connect(function()
-    if not aimbotFOVContainer.Visible then return end
-    local c = aimbotfovcenter()
-    local r = aimbot.fovRadius
-    aimbotFOVContainer.Size     = UDim2.fromOffset(r*2, r*2)
-    aimbotFOVContainer.Position = UDim2.fromOffset(c.X-r, c.Y-r)
-    if aimbotFOVCfg.FilledAnimated then
-        aimbotFOVFillGrad.Rotation = math.sin(tick()*aimbotFOVCfg.FilledSpeed)*180 + aimbotFOVCfg.FilledRotation
-    elseif aimbotFOVCfg.SpinOn then
-        aimbotFOVFillGrad.Rotation = aimbotFOVCfg.FilledRotation + (tick()*aimbotFOVCfg.SpinSpd*90) % 360
-    end
-    if aimbotFOVCfg.SpinOn then
-        aimbotFOVStrokeGrad.Rotation = aimbotFOVCfg.OutlineRotation + (tick()*aimbotFOVCfg.SpinSpd*90) % 360
-    end
+    pcall(function()
+        if not aimbotFOVContainer.Visible then return end
+        local c = aimbotfovcenter()
+        local r = aimbot.fovRadius
+        aimbotFOVContainer.Size     = UDim2.fromOffset(r*2, r*2)
+        aimbotFOVContainer.Position = UDim2.fromOffset(c.X-r, c.Y-r)
+        if aimbotFOVCfg.FilledAnimated then
+            aimbotFOVFillGrad.Rotation = math.sin(tick()*aimbotFOVCfg.FilledSpeed)*180 + aimbotFOVCfg.FilledRotation
+        elseif aimbotFOVCfg.SpinOn then
+            aimbotFOVFillGrad.Rotation = aimbotFOVCfg.FilledRotation + (tick()*aimbotFOVCfg.SpinSpd*90)%360
+        end
+        if aimbotFOVCfg.SpinOn then
+            aimbotFOVStrokeGrad.Rotation = aimbotFOVCfg.OutlineRotation + (tick()*aimbotFOVCfg.SpinSpd*90)%360
+        end
+    end)
 end)
 
 --// ============================================================
@@ -754,17 +858,16 @@ end)
 --// ============================================================
 
 local antiAimSettings = {
-    enabled      = false,
-    yawtype      = "none",
-    pitchtype    = "none",
-    angletype    = "none",
-    customangle  = 0,
-    minspeed     = 10,
-    maxspeed     = 20,
-    minangle     = 30,
-    maxangle     = 60,
-    randomangle  = false,
-    spindirection = 1,
+    enabled     = false,
+    yawtype     = "none",
+    pitchtype   = "none",
+    angletype   = "none",
+    customangle = 0,
+    minspeed    = 10,
+    maxspeed    = 20,
+    minangle    = 30,
+    maxangle    = 60,
+    randomangle = false,
 }
 
 local antiAimState = {
@@ -774,74 +877,69 @@ local antiAimState = {
     framecounter = 0,
 }
 
-local underground_enabled  = false
-local underground_oldpos   = nil
-local localfighter         = nil
+local underground_enabled = false
+local underground_oldpos  = nil
+local localfighter        = nil
 
 task.spawn(function()
-    local fc = instanceSafeRequire(LocalPlayer.PlayerScripts.Controllers.FighterController)
-    if fc then localfighter = fc.LocalFighter end
+    task.wait(2)
+    pcall(function()
+        if Modules.fighter then
+            localfighter = Modules.fighter.LocalFighter
+        end
+    end)
 end)
 
-local function getrandominrange(min, max)
-    return min + math.random() * (max - min)
+local function getrandominrange(min2, max2)
+    return min2 + math.random() * (max2 - min2)
 end
 
-local function curweap2()
-    local vm = workspace:FindFirstChild("ViewModels")
-    if not vm then return nil end
-    local fp = vm:FindFirstChild("FirstPerson")
-    if not fp then return nil end
-    for _, child in ipairs(fp:GetChildren()) do
-        local parts = {}
-        for part in child.Name:gmatch("[^-]+") do
-            table.insert(parts, part:match("^%s*(.-)%s*$"))
-        end
-        if #parts >= 2 then return parts[2] end
-    end
-    return nil
-end
-
-local headBackwardsMotors  = {}
-local headBackwardsOrigC0  = {}
+local headBackwardsMotors = {}
+local headBackwardsOrigC0 = {}
 
 local function updateHeadBackwardsMotors()
-    headBackwardsMotors = {}
-    headBackwardsOrigC0 = {}
-    local character = LocalPlayer.Character
-    if not character then return end
-    for _, v in pairs(character:GetDescendants()) do
-        if v:IsA("Motor6D") then
-            headBackwardsMotors[v.Name] = v
-            headBackwardsOrigC0[v] = v.C0
+    pcall(function()
+        headBackwardsMotors = {}
+        headBackwardsOrigC0 = {}
+        local character = LocalPlayer.Character
+        if not character then return end
+        for _, v in pairs(character:GetDescendants()) do
+            if v:IsA("Motor6D") then
+                headBackwardsMotors[v.Name] = v
+                headBackwardsOrigC0[v] = v.C0
+            end
         end
-    end
+    end)
 end
 
 local function resetHeadBackwardsMotors()
-    for motor, origC0 in pairs(headBackwardsOrigC0) do
-        if motor and motor.Parent then motor.C0 = origC0 end
-    end
+    pcall(function()
+        for motor, origC0 in pairs(headBackwardsOrigC0) do
+            if motor and motor.Parent then motor.C0 = origC0 end
+        end
+    end)
 end
 
-local function calculateYaw(dt)
+local function calculateYaw()
     local yaw = 0
     local t   = antiAimSettings
     local st  = antiAimState
-    if t.yawtype == "jitter" then
-        local minA = math.rad(t.minangle)
-        local maxA = math.rad(t.maxangle)
-        yaw = t.randomangle and getrandominrange(-maxA, maxA) or (math.random()>0.5 and minA or -minA)
-    elseif t.yawtype == "spinbot" then
-        local speed = getrandominrange(t.minspeed/10, t.maxspeed/10)
-        yaw = (tick()*speed) % (2*math.pi)
-    elseif t.yawtype == "random" then
-        if st.framecounter % 30 == 0 then
-            yaw = getrandominrange(-math.rad(t.maxangle), math.rad(t.maxangle))
-        else
-            yaw = st.smoothyaw
+    pcall(function()
+        if t.yawtype == "jitter" then
+            local minA = math.rad(t.minangle)
+            local maxA = math.rad(t.maxangle)
+            yaw = t.randomangle and getrandominrange(-maxA, maxA) or (math.random()>0.5 and minA or -minA)
+        elseif t.yawtype == "spinbot" then
+            local speed = getrandominrange(t.minspeed/10, t.maxspeed/10)
+            yaw = (tick()*speed) % (2*math.pi)
+        elseif t.yawtype == "random" then
+            if st.framecounter % 30 == 0 then
+                yaw = getrandominrange(-math.rad(t.maxangle), math.rad(t.maxangle))
+            else
+                yaw = st.smoothyaw
+            end
         end
-    end
+    end)
     return yaw
 end
 
@@ -849,19 +947,21 @@ local function calculatePitch()
     local pitch = 0
     local t     = antiAimSettings
     local st    = antiAimState
-    if t.pitchtype == "jitter" then
-        local minA = math.rad(t.minangle)
-        local maxA = math.rad(t.maxangle)
-        pitch = t.randomangle and getrandominrange(-maxA, maxA) or (math.random()>0.5 and minA or -minA)
-    elseif t.pitchtype == "spinbot" then
-        pitch = math.sin(tick()*(t.maxspeed/10)) * math.rad(t.maxangle)
-    elseif t.pitchtype == "random" then
-        if st.framecounter % 20 == 0 then
-            pitch = getrandominrange(math.rad(-89), math.rad(89))
-        else
-            pitch = st.smoothpitch
+    pcall(function()
+        if t.pitchtype == "jitter" then
+            local minA = math.rad(t.minangle)
+            local maxA = math.rad(t.maxangle)
+            pitch = t.randomangle and getrandominrange(-maxA, maxA) or (math.random()>0.5 and minA or -minA)
+        elseif t.pitchtype == "spinbot" then
+            pitch = math.sin(tick()*(t.maxspeed/10)) * math.rad(t.maxangle)
+        elseif t.pitchtype == "random" then
+            if st.framecounter % 20 == 0 then
+                pitch = getrandominrange(math.rad(-89), math.rad(89))
+            else
+                pitch = st.smoothpitch
+            end
         end
-    end
+    end)
     return pitch
 end
 
@@ -876,43 +976,44 @@ local function calculateRoll()
 end
 
 local function flushAntiAimState()
-    underground_oldpos = nil
-    antiAimState.framecounter = 0
-    antiAimState.smoothyaw    = 0
-    antiAimState.smoothpitch  = 0
-    antiAimState.smoothroll   = 0
-    resetHeadBackwardsMotors()
-    local char = LocalPlayer.Character
-    local hrp  = char and char:FindFirstChild("HumanoidRootPart")
-    if hrp then
-        pcall(function() hrp.AssemblyAngularVelocity = Vector3.zero end)
-    end
+    pcall(function()
+        underground_oldpos = nil
+        antiAimState.framecounter = 0
+        antiAimState.smoothyaw    = 0
+        antiAimState.smoothpitch  = 0
+        antiAimState.smoothroll   = 0
+        resetHeadBackwardsMotors()
+        local char = LocalPlayer.Character
+        local hrp  = char and char:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            pcall(function() hrp.AssemblyAngularVelocity = Vector3.zero end)
+        end
+    end)
 end
 
-getgenv().InstanceFlushMovementState   = flushAntiAimState
-getgenv().InstanceUndergroundEnabled   = false
+getgenv().InstanceFlushMovementState = flushAntiAimState
+getgenv().InstanceUndergroundEnabled = false
 getgenv().InstanceSetUnderground = function(val)
     underground_enabled = val
     getgenv().InstanceUndergroundEnabled = val
     if not val then underground_oldpos = nil end
 end
 
-local function updantiaim(dt)
-    if not antiAimSettings.enabled then return end
-    if antiAimSettings.yawtype == "none" and antiAimSettings.pitchtype == "none" and antiAimSettings.angletype == "none" then return end
-    if not curweap2() then return end
-    local char = LocalPlayer.Character
-    if not char then return end
-    local rootpart = char:FindFirstChild("HumanoidRootPart")
-    if not rootpart then return end
-    antiAimState.framecounter += 1
-    local yaw   = calculateYaw(dt)
-    local pitch = calculatePitch()
-    local roll  = calculateRoll()
-    rootpart.CFrame = rootpart.CFrame * CFrame.Angles(pitch, yaw, roll)
-end
-
-RunService.Heartbeat:Connect(updantiaim)
+RunService.Heartbeat:Connect(function(dt)
+    pcall(function()
+        if not antiAimSettings.enabled then return end
+        if antiAimSettings.yawtype == "none" and antiAimSettings.pitchtype == "none" and antiAimSettings.angletype == "none" then return end
+        local char = LocalPlayer.Character
+        if not char then return end
+        local rootpart = char:FindFirstChild("HumanoidRootPart")
+        if not rootpart then return end
+        antiAimState.framecounter += 1
+        local yaw   = calculateYaw()
+        local pitch = calculatePitch()
+        local roll  = calculateRoll()
+        rootpart.CFrame = rootpart.CFrame * CFrame.Angles(pitch, yaw, roll)
+    end)
+end)
 
 LocalPlayer.CharacterAdded:Connect(function()
     task.defer(function()
@@ -944,11 +1045,11 @@ local rageConfig = {
         underOffset    = 4,
     },
     prediction = {
-        enabled       = false,
-        multiplier    = 1.2,
-        velocity      = Vector3.new(0,0,0),
-        lastposition  = nil,
-        lasttime      = 0,
+        enabled      = false,
+        multiplier   = 1.2,
+        velocity     = Vector3.new(0,0,0),
+        lastposition = nil,
+        lasttime     = 0,
     },
     orbit = {
         active    = false,
@@ -961,10 +1062,10 @@ local rageConfig = {
         savedpos  = nil,
     },
     state = {
-        reloading        = false,
-        outofammo        = false,
-        csyncactive      = false,
-        reloadStartedAt  = 0,
+        reloading       = false,
+        outofammo       = false,
+        csyncactive     = false,
+        reloadStartedAt = 0,
     },
     voidspam = {
         enabled         = false,
@@ -978,18 +1079,13 @@ local rageConfig = {
     },
 }
 
-local vfrSnap  = {cf=nil, lv=nil, av=nil}
-local vfrLim   = 2147483646
-local vfrDead  = 1147483646
+local vfrSnap = {cf=nil, lv=nil, av=nil}
+local vfrLim  = 2147483646
+local vfrDead = 1147483646
 local oldpos_ragebot = nil
 
 local vhState = {
-    active           = false,
-    hrp              = nil,
-    mainConnection   = nil,
-    restoreConnection= nil,
-    currentVoidPos   = nil,
-    lastTeleportTime = 0,
+    active = false,
 }
 
 local immuneList   = {}
@@ -997,7 +1093,9 @@ local onImmune     = {}
 local onVulnerable = {}
 
 local function clrVoidSnap()
-    vfrSnap.cf, vfrSnap.lv, vfrSnap.av = nil, nil, nil
+    vfrSnap.cf = nil
+    vfrSnap.lv = nil
+    vfrSnap.av = nil
 end
 
 local function voidHrp()
@@ -1007,18 +1105,20 @@ end
 
 local function rndSkip(mi, ma, dmi, dma)
     local val = math.random(mi, ma)
-    while val >= dmi and val <= dma do
+    local attempts = 0
+    while val >= dmi and val <= dma and attempts < 100 do
         val = math.random(mi, ma)
+        attempts += 1
     end
     return val
 end
 
 local function snapVoid(hrp)
     if not hrp then return end
-    vfrSnap.cf = hrp.CFrame
-    vfrSnap.lv = hrp.AssemblyLinearVelocity
-    vfrSnap.av = hrp.AssemblyAngularVelocity
     pcall(function()
+        vfrSnap.cf = hrp.CFrame
+        vfrSnap.lv = hrp.AssemblyLinearVelocity
+        vfrSnap.av = hrp.AssemblyAngularVelocity
         local p = Vector3.new(
             rndSkip(-vfrLim, vfrLim, -vfrDead, vfrDead),
             rndSkip(-vfrLim, vfrLim, -vfrDead, vfrDead),
@@ -1035,14 +1135,16 @@ local function snapVoid(hrp)
     end)
 end
 
-RunService:BindToRenderStep("vfr_csync", Enum.RenderPriority.First.Value, function()
-    if not vfrSnap.cf then return end
-    local hrp = voidHrp()
-    if not hrp then return end
-    pcall(function()
-        hrp.CFrame = vfrSnap.cf
-        hrp.AssemblyLinearVelocity  = vfrSnap.lv
-        hrp.AssemblyAngularVelocity = vfrSnap.av
+pcall(function()
+    RunService:BindToRenderStep("vfr_csync", Enum.RenderPriority.First.Value, function()
+        if not vfrSnap.cf then return end
+        local hrp = voidHrp()
+        if not hrp then return end
+        pcall(function()
+            hrp.CFrame = vfrSnap.cf
+            hrp.AssemblyLinearVelocity  = vfrSnap.lv
+            hrp.AssemblyAngularVelocity = vfrSnap.av
+        end)
     end)
 end)
 
@@ -1056,127 +1158,142 @@ end
 
 local function isteammate(targetplayer)
     if not targetplayer then return false end
-    return LocalPlayer:GetAttribute("TeamID") == targetplayer:GetAttribute("TeamID")
+    local ok1, t1 = pcall(function() return LocalPlayer:GetAttribute("TeamID") end)
+    local ok2, t2 = pcall(function() return targetplayer:GetAttribute("TeamID") end)
+    if ok1 and ok2 and t1 and t2 then return t1 == t2 end
+    return false
 end
 
 local function valid(char)
     if not char or not char.Parent then return false end
-    local hum = char:FindFirstChildOfClass("Humanoid")
-    if not hum or hum.Health <= 0 then return false end
-    if not char:FindFirstChild("HumanoidRootPart") then return false end
-    local targetplayer = Players:GetPlayerFromCharacter(char)
-    if not targetplayer or isteammate(targetplayer) then return false end
-    return true
+    local ok, result = pcall(function()
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        if not hum or hum.Health <= 0 then return false end
+        if not char:FindFirstChild("HumanoidRootPart") then return false end
+        local targetplayer = Players:GetPlayerFromCharacter(char)
+        if not targetplayer or isteammate(targetplayer) then return false end
+        return true
+    end)
+    return ok and result or false
 end
 
 local function nearest()
-    local cursorpos  = UserInputService:GetMouseLocation()
-    local besttarget = nil
-    local bestdist   = math.huge
-    for _, p in Players:GetPlayers() do
-        if p ~= LocalPlayer and p.Character then
-            local char = p.Character
-            if valid(char) then
-                local root = char:FindFirstChild("HumanoidRootPart")
-                if root then
-                    local screenpos, onscreen = worldToScreen(root.Position, Camera)
-                    if onscreen and screenpos then
-                        local distance = (Vector2.new(screenpos.X, screenpos.Y) - cursorpos).Magnitude
-                        if distance < bestdist then
-                            besttarget = char
-                            bestdist   = distance
+    local ok, result = pcall(function()
+        local cursorpos  = UserInputService:GetMouseLocation()
+        local besttarget = nil
+        local bestdist   = math.huge
+        for _, p in Players:GetPlayers() do
+            if p ~= LocalPlayer and p.Character then
+                local char = p.Character
+                if valid(char) then
+                    local root = char:FindFirstChild("HumanoidRootPart")
+                    if root then
+                        local screenpos, onscreen = worldToScreen(root.Position, Camera)
+                        if onscreen and screenpos then
+                            local distance = (Vector2.new(screenpos.X, screenpos.Y) - cursorpos).Magnitude
+                            if distance < bestdist then
+                                besttarget = char
+                                bestdist   = distance
+                            end
                         end
                     end
                 end
             end
         end
-    end
-    return besttarget
+        return besttarget
+    end)
+    return ok and result or nil
 end
 
 local function hitpartfromname(character, partname)
     if not character then return nil end
-    if partname == "Closest" then
-        local mypos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        if not mypos then return character:FindFirstChild("Head") end
-        local closest, dist = nil, math.huge
-        for _, part in pairs(character:GetChildren()) do
-            if part:IsA("BasePart") then
-                local d = (part.Position - mypos.Position).Magnitude
-                if d < dist then dist = d; closest = part end
+    local ok, result = pcall(function()
+        if partname == "Closest" then
+            local mypos = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            if not mypos then return character:FindFirstChild("Head") end
+            local closest, dist2 = nil, math.huge
+            for _, part in pairs(character:GetChildren()) do
+                if part:IsA("BasePart") then
+                    local d = (part.Position - mypos.Position).Magnitude
+                    if d < dist2 then dist2 = d; closest = part end
+                end
             end
+            return closest or character:FindFirstChild("Head")
+        elseif partname == "Random" then
+            local parts = {"Head","HumanoidRootPart","UpperTorso"}
+            return character:FindFirstChild(parts[math.random(#parts)]) or character:FindFirstChild("Head")
+        else
+            return character:FindFirstChild(partname) or character:FindFirstChild("Head")
         end
-        return closest or character:FindFirstChild("Head")
-    elseif partname == "Random" then
-        local parts = {"Head","HumanoidRootPart","UpperTorso"}
-        return character:FindFirstChild(parts[math.random(#parts)]) or character:FindFirstChild("Head")
-    else
-        return character:FindFirstChild(partname) or character:FindFirstChild("Head")
-    end
+    end)
+    return ok and result or nil
 end
 
 local function predict(targetpart, origin)
     if not rageConfig.prediction.enabled or not targetpart then
         return targetpart and targetpart.Position or Vector3.new()
     end
-    local basepos  = targetpart.Position
-    local distance = (basepos - origin).Magnitude
-    local ping     = 0
-    pcall(function()
-        ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+    local ok, result = pcall(function()
+        local basepos   = targetpart.Position
+        local distance  = (basepos - origin).Magnitude
+        local ping      = 0
+        pcall(function()
+            ping = Stats.Network.ServerStatsItem["Data Ping"]:GetValue() / 1000
+        end)
+        local traveltime = distance / 3000
+        local totaltime  = (traveltime + ping) * rageConfig.prediction.multiplier
+        return basepos + (rageConfig.prediction.velocity * totaltime)
     end)
-    local traveltime = distance / 3000
-    local totaltime  = (traveltime + ping) * rageConfig.prediction.multiplier
-    return basepos + (rageConfig.prediction.velocity * totaltime)
+    return ok and result or (targetpart and targetpart.Position or Vector3.new())
 end
 
 local function updatevel()
-    if not rageConfig.target.character or not rageConfig.prediction.enabled then
-        rageConfig.prediction.velocity  = Vector3.new(0,0,0)
-        rageConfig.prediction.lastposition = nil
-        return
-    end
-    local root = rageConfig.target.character:FindFirstChild("HumanoidRootPart")
-    if not root then return end
-    local now = tick()
-    local dt  = now - rageConfig.prediction.lasttime
-    if dt > 0 and dt < 0.1 then
-        local currentpos = root.Position
-        if rageConfig.prediction.lastposition then
-            local instantvel = (currentpos - rageConfig.prediction.lastposition) / dt
-            rageConfig.prediction.velocity = rageConfig.prediction.velocity:Lerp(instantvel, 0.6)
+    pcall(function()
+        if not rageConfig.target.character or not rageConfig.prediction.enabled then
+            rageConfig.prediction.velocity  = Vector3.new(0,0,0)
+            rageConfig.prediction.lastposition = nil
+            return
         end
-        rageConfig.prediction.lastposition = currentpos
-        rageConfig.prediction.lasttime     = now
-    end
-end
-
-local function isHidingPhase()
-    return rageConfig.voidspam.enabled and rageConfig.voidspam.phase == "hide"
+        local root = rageConfig.target.character:FindFirstChild("HumanoidRootPart")
+        if not root then return end
+        local now = tick()
+        local dt2 = now - rageConfig.prediction.lasttime
+        if dt2 > 0 and dt2 < 0.1 then
+            local currentpos = root.Position
+            if rageConfig.prediction.lastposition then
+                local instantvel = (currentpos - rageConfig.prediction.lastposition) / dt2
+                rageConfig.prediction.velocity = rageConfig.prediction.velocity:Lerp(instantvel, 0.6)
+            end
+            rageConfig.prediction.lastposition = currentpos
+            rageConfig.prediction.lasttime     = now
+        end
+    end)
 end
 
 local function tickVoidSpam()
-    if not rageConfig.voidspam.enabled then return end
-    local now     = tick()
-    local elapsed = now - rageConfig.voidspam.lastswitch
-    local vs      = rageConfig.voidspam
-    if vs.phase == "shoot" then
-        if elapsed >= vs.currentduration then
-            vs.phase           = "hide"
-            vs.currentduration = randVs(vs.hide_min, vs.hide_max)
-            vs.lastswitch      = now
-        end
-    elseif vs.phase == "hide" then
-        if elapsed >= vs.currentduration then
+    pcall(function()
+        if not rageConfig.voidspam.enabled then return end
+        local now     = tick()
+        local elapsed = now - rageConfig.voidspam.lastswitch
+        local vs      = rageConfig.voidspam
+        if vs.phase == "shoot" then
+            if elapsed >= vs.currentduration then
+                vs.phase           = "hide"
+                vs.currentduration = randVs(vs.hide_min, vs.hide_max)
+                vs.lastswitch      = now
+            end
+        elseif vs.phase == "hide" then
+            if elapsed >= vs.currentduration then
+                vs.phase           = "shoot"
+                vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
+                vs.lastswitch      = now
+            end
+        else
             vs.phase           = "shoot"
             vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
             vs.lastswitch      = now
         end
-    else
-        vs.phase           = "shoot"
-        vs.currentduration = randVs(vs.shoot_min, vs.shoot_max)
-        vs.lastswitch      = now
-    end
+    end)
 end
 
 local function atkCfg()
@@ -1197,189 +1314,203 @@ local function orbBase(root)
 end
 
 local function stopsync()
-    if not rageConfig.state.csyncactive then return end
-    if rageConfig.orbit.connection then
-        rageConfig.orbit.connection:Disconnect()
-        rageConfig.orbit.connection = nil
-    end
-    rageConfig.state.csyncactive = false
-    rageConfig.orbit.active      = false
-    clrVoidSnap()
-    rageConfig.voidspam.phase = nil
-    if rageConfig.orbit.savedpos and localfighter and localfighter.Entity and localfighter.Entity.RootPart then
-        pcall(function()
-            localfighter.Entity.RootPart.CFrame = rageConfig.orbit.savedpos
-        end)
-    end
-    rageConfig.orbit.serverpos = nil
-    rageConfig.orbit.savedpos  = nil
-    oldpos_ragebot = nil
+    pcall(function()
+        if not rageConfig.state.csyncactive then return end
+        if rageConfig.orbit.connection then
+            rageConfig.orbit.connection:Disconnect()
+            rageConfig.orbit.connection = nil
+        end
+        rageConfig.state.csyncactive = false
+        rageConfig.orbit.active      = false
+        clrVoidSnap()
+        rageConfig.voidspam.phase = nil
+        if rageConfig.orbit.savedpos and localfighter and localfighter.Entity and localfighter.Entity.RootPart then
+            pcall(function()
+                localfighter.Entity.RootPart.CFrame = rageConfig.orbit.savedpos
+            end)
+        end
+        rageConfig.orbit.serverpos = nil
+        rageConfig.orbit.savedpos  = nil
+        oldpos_ragebot = nil
+    end)
 end
 
 local function startsync()
-    if rageConfig.state.csyncactive then return end
-    if rageConfig.target.immune then return end
-    if not rageConfig.target.character or not valid(rageConfig.target.character) then return end
-    rageConfig.state.csyncactive = true
-    rageConfig.orbit.active      = true
-    local s = atkCfg()
-    rageConfig.orbit.height = s.height
-    rageConfig.orbit.radius = s.radius or 0
-    if localfighter and localfighter.Entity and localfighter.Entity.RootPart then
-        rageConfig.orbit.savedpos = localfighter.Entity.RootPart.CFrame
-    end
-    rageConfig.orbit.connection = RunService.Heartbeat:Connect(function(dt)
-        if not rageConfig.state.csyncactive then return end
-        if rageConfig.target.immune then stopsync() return end
-        if not rageConfig.target.character or not valid(rageConfig.target.character) then stopsync() return end
-        if not localfighter or not localfighter.Entity or not localfighter.Entity.RootPart then stopsync() return end
-
-        oldpos_ragebot = localfighter.Entity.RootPart.CFrame
-
-        local _weapon = getweapon()
-        local checksling = isSling(_weapon)
-
-        if rageConfig.voidspam.enabled and not rageConfig.target.immune then
-            tickVoidSpam()
-            if rageConfig.voidspam.phase == "hide" then
-                local randomX = math.random(-10000, 10000)
-                local randomZ = math.random(-10000, 10000)
-                rageConfig.orbit.serverpos = Vector3.new(randomX, -99999999999, randomZ)
-                pcall(function()
-                    localfighter.Entity.RootPart.CFrame = CFrame.new(rageConfig.orbit.serverpos)
-                end)
-                return
-            end
+    pcall(function()
+        if rageConfig.state.csyncactive then return end
+        if rageConfig.target.immune then return end
+        if not rageConfig.target.character or not valid(rageConfig.target.character) then return end
+        rageConfig.state.csyncactive = true
+        rageConfig.orbit.active      = true
+        local s = atkCfg()
+        rageConfig.orbit.height = s.height
+        rageConfig.orbit.radius = s.radius or 0
+        if localfighter and localfighter.Entity and localfighter.Entity.RootPart then
+            rageConfig.orbit.savedpos = localfighter.Entity.RootPart.CFrame
         end
+        rageConfig.orbit.connection = RunService.Heartbeat:Connect(function(dt2)
+            pcall(function()
+                if not rageConfig.state.csyncactive then return end
+                if rageConfig.target.immune then stopsync() return end
+                if not rageConfig.target.character or not valid(rageConfig.target.character) then stopsync() return end
+                if not localfighter or not localfighter.Entity or not localfighter.Entity.RootPart then stopsync() return end
 
-        if not rageConfig.target.character then stopsync() return end
-        local root = rageConfig.target.character:FindFirstChild("HumanoidRootPart")
-        if not root then stopsync() return end
+                oldpos_ragebot = localfighter.Entity.RootPart.CFrame
 
-        if rageConfig.state.outofammo and not checksling and _weapon and not isInfiniteWeapon() then
-            local hrp = voidHrp()
-            if hrp then
-                snapVoid(hrp)
-            else
-                local randomX = math.random(-10000, 10000)
-                local randomZ = math.random(-10000, 10000)
-                rageConfig.orbit.serverpos = Vector3.new(randomX, -99999999999, randomZ)
-                pcall(function()
-                    localfighter.Entity.RootPart.CFrame = CFrame.new(rageConfig.orbit.serverpos)
-                end)
-            end
-            return
-        end
+                local _weapon    = getweapon()
+                local checksling = isSling(_weapon)
 
-        local targetpos = orbBase(root)
-        rageConfig.orbit.angle = rageConfig.orbit.angle + (rageConfig.orbit.speed * dt)
-        local offset = Vector3.new(
-            math.cos(rageConfig.orbit.angle) * rageConfig.orbit.radius,
-            rageConfig.orbit.height,
-            math.sin(rageConfig.orbit.angle) * rageConfig.orbit.radius
-        )
-        rageConfig.orbit.serverpos = targetpos + offset
-
-        if not getgenv().InstanceUndergroundEnabled then
-            if localfighter and localfighter.Entity and localfighter.Entity.RootPart then
-                local currentPos = localfighter.Entity.RootPart.CFrame
-                local newPos = CFrame.new(rageConfig.orbit.serverpos)
-                local distance = (newPos.Position - currentPos.Position).Magnitude
-                if distance < 2000 then
-                    localfighter.Entity.RootPart.CFrame = newPos
-                    rageConfig.orbit.savedpos = currentPos
+                if rageConfig.voidspam.enabled and not rageConfig.target.immune then
+                    tickVoidSpam()
+                    if rageConfig.voidspam.phase == "hide" then
+                        local randomX = math.random(-10000, 10000)
+                        local randomZ = math.random(-10000, 10000)
+                        rageConfig.orbit.serverpos = Vector3.new(randomX, -99999999999, randomZ)
+                        pcall(function()
+                            localfighter.Entity.RootPart.CFrame = CFrame.new(rageConfig.orbit.serverpos)
+                        end)
+                        return
+                    end
                 end
-            end
-        end
+
+                local root = rageConfig.target.character:FindFirstChild("HumanoidRootPart")
+                if not root then stopsync() return end
+
+                if rageConfig.state.outofammo and not checksling and _weapon and not isInfiniteWeapon() then
+                    local hrp = voidHrp()
+                    if hrp then
+                        snapVoid(hrp)
+                    else
+                        rageConfig.orbit.serverpos = Vector3.new(
+                            math.random(-10000,10000), -99999999999, math.random(-10000,10000)
+                        )
+                        pcall(function()
+                            localfighter.Entity.RootPart.CFrame = CFrame.new(rageConfig.orbit.serverpos)
+                        end)
+                    end
+                    return
+                end
+
+                local targetpos = orbBase(root)
+                rageConfig.orbit.angle = rageConfig.orbit.angle + (rageConfig.orbit.speed * dt2)
+                local offset = Vector3.new(
+                    math.cos(rageConfig.orbit.angle) * rageConfig.orbit.radius,
+                    rageConfig.orbit.height,
+                    math.sin(rageConfig.orbit.angle) * rageConfig.orbit.radius
+                )
+                rageConfig.orbit.serverpos = targetpos + offset
+
+                if not getgenv().InstanceUndergroundEnabled then
+                    local currentPos = localfighter.Entity.RootPart.CFrame
+                    local newPos     = CFrame.new(rageConfig.orbit.serverpos)
+                    if (newPos.Position - currentPos.Position).Magnitude < 2000 then
+                        localfighter.Entity.RootPart.CFrame = newPos
+                        rageConfig.orbit.savedpos = currentPos
+                    end
+                end
+            end)
+        end)
     end)
 end
 
 local function autoshoot()
-    if rageConfig.voidspam.enabled and rageConfig.voidspam.phase == "hide" then return end
-    if not rageConfig.target.enabled or not rageConfig.target.character or not rageConfig.target.autoshoot then return end
-    if rageConfig.target.immune then return end
-    local lf = Modules.fighter and Modules.fighter.LocalFighter
-    if not lf or not lf.EquippedItem then return end
-    if not isInfiniteWeapon() then
-        if rageConfig.state.reloading or rageConfig.state.outofammo then return end
-    end
-    local targetChar = rageConfig.target.character
-    if not valid(targetChar) then return end
-    local hitPart = hitpartfromname(targetChar, rageConfig.target.hitpart)
-    if not hitPart then return end
-    local shootPos
-    if rageConfig.state.csyncactive and rageConfig.orbit.serverpos then
-        shootPos = rageConfig.orbit.serverpos
-    else
-        local root = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-        shootPos = root and root.Position or Vector3.new()
-    end
-    local targetPos = predict(hitPart, shootPos)
-    if not Modules.utility or not Modules.enums then return end
-    local data = {
-        [utf8.char(1)] = {
-            [utf8.char(0)] = Modules.utility:EncodeCFrame(CFrame.new(shootPos, targetPos)),
-            [utf8.char(1)] = Modules.utility:EncodeCFrame(CFrame.new(shootPos, targetPos)),
-            [utf8.char(2)] = hitPart,
-            [utf8.char(3)] = Modules.utility:EncodeCFrame(CFrame.new(0.43, 0.25, 0.42)),
-        },
-    }
-    local equipped = lf.EquippedItem
-    if equipped and equipped:Get("ObjectID") then
+    pcall(function()
+        if rageConfig.voidspam.enabled and rageConfig.voidspam.phase == "hide" then return end
+        if not rageConfig.target.enabled or not rageConfig.target.character or not rageConfig.target.autoshoot then return end
+        if rageConfig.target.immune then return end
+        if not Modules.fighter or not Modules.utility or not Modules.enums then return end
+        local lf = Modules.fighter.LocalFighter
+        if not lf or not lf.EquippedItem then return end
+        if not isInfiniteWeapon() then
+            if rageConfig.state.reloading or rageConfig.state.outofammo then return end
+        end
+        local targetChar = rageConfig.target.character
+        if not valid(targetChar) then return end
+        local hitPart = hitpartfromname(targetChar, rageConfig.target.hitpart)
+        if not hitPart then return end
+        local shootPos
+        if rageConfig.state.csyncactive and rageConfig.orbit.serverpos then
+            shootPos = rageConfig.orbit.serverpos
+        else
+            local root2 = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
+            shootPos = root2 and root2.Position or Vector3.new()
+        end
+        local targetPos = predict(hitPart, shootPos)
+        local ok2, shootCF = pcall(function()
+            return Modules.utility:EncodeCFrame(CFrame.new(shootPos, targetPos))
+        end)
+        if not ok2 then return end
+        local data = {
+            [utf8.char(1)] = {
+                [utf8.char(0)] = shootCF,
+                [utf8.char(1)] = shootCF,
+                [utf8.char(2)] = hitPart,
+                [utf8.char(3)] = Modules.utility:EncodeCFrame(CFrame.new(0.43, 0.25, 0.42)),
+            },
+        }
+        local equipped = lf.EquippedItem
+        local oid = equipped and equipped:Get("ObjectID")
+        if not oid then return end
+        local shootEnum = Modules.enums:ToEnum("StartShooting")
+        if not shootEnum then return end
+        local remoteOk, useItem = pcall(function()
+            return ReplicatedStorage.Remotes.Replication.Fighter.UseItem
+        end)
+        if not remoteOk or not useItem then return end
         local attempts = math.clamp(math.floor(tonumber(rageConfig.target.shootAttempts) or 1), 1, 3)
         for _ = 1, attempts do
             pcall(function()
-                ReplicatedStorage.Remotes.Replication.Fighter.UseItem:FireServer(
-                    equipped:Get("ObjectID"),
-                    Modules.enums:ToEnum("StartShooting"),
-                    data,
-                    nil
-                )
+                useItem:FireServer(oid, shootEnum, data, nil)
             end)
         end
-    end
+    end)
 end
 
 local function cleartarget()
-    rageConfig.target.enabled   = false
-    stopsync()
-    rageConfig.target.character  = nil
-    rageConfig.target.lastchar   = nil
-    rageConfig.target.lastplayer = nil
-    rageConfig.target.manualkey  = false
-    rageConfig.target.immune     = false
+    pcall(function()
+        rageConfig.target.enabled   = false
+        stopsync()
+        rageConfig.target.character  = nil
+        rageConfig.target.lastchar   = nil
+        rageConfig.target.lastplayer = nil
+        rageConfig.target.manualkey  = false
+        rageConfig.target.immune     = false
+    end)
 end
 
 local function settarget(char)
     if not char then return end
-    rageConfig.target.enabled    = true
-    rageConfig.target.character  = char
-    rageConfig.target.lastchar   = char
-    rageConfig.target.lastplayer = Players:GetPlayerFromCharacter(char)
-    rageConfig.target.immune     = false
-    local root = char:FindFirstChild("HumanoidRootPart")
-    if root and root:FindFirstChild("Attachment") then
-        rageConfig.target.immune = true
-    else
-        startsync()
-    end
+    pcall(function()
+        rageConfig.target.enabled    = true
+        rageConfig.target.character  = char
+        rageConfig.target.lastchar   = char
+        rageConfig.target.lastplayer = Players:GetPlayerFromCharacter(char)
+        rageConfig.target.immune     = false
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if root and root:FindFirstChild("Attachment") then
+            rageConfig.target.immune = true
+        else
+            startsync()
+        end
+    end)
 end
 
--- Immune scanner
 RunService.Heartbeat:Connect(function()
-    for _, plr in pairs(Players:GetPlayers()) do
-        if plr == LocalPlayer then continue end
-        local char   = plr.Character
-        local root   = char and char:FindFirstChild("HumanoidRootPart")
-        local immune = root and root:FindFirstChild("Attachment") ~= nil
-        if immune and not immuneList[plr.Name] then
-            immuneList[plr.Name] = true
-            for _, cb in pairs(onImmune) do cb(plr) end
-        elseif not immune and immuneList[plr.Name] then
-            immuneList[plr.Name] = nil
-            for _, cb in pairs(onVulnerable) do cb(plr) end
+    pcall(function()
+        for _, plr in pairs(Players:GetPlayers()) do
+            if plr == LocalPlayer then continue end
+            local char   = plr.Character
+            local root   = char and char:FindFirstChild("HumanoidRootPart")
+            local immune = root and root:FindFirstChild("Attachment") ~= nil
+            if immune and not immuneList[plr.Name] then
+                immuneList[plr.Name] = true
+                for _, cb in pairs(onImmune) do pcall(cb, plr) end
+            elseif not immune and immuneList[plr.Name] then
+                immuneList[plr.Name] = nil
+                for _, cb in pairs(onVulnerable) do pcall(cb, plr) end
+            end
         end
-    end
+    end)
 end)
 
 table.insert(onImmune, function(plr)
@@ -1399,29 +1530,30 @@ table.insert(onVulnerable, function(plr)
     end
 end)
 
--- Main ragebot heartbeat
 RunService.Heartbeat:Connect(function()
-    if rageConfig.target.character and rageConfig.prediction.enabled then
-        updatevel()
-    end
-    if rageConfig.target.auto and not rageConfig.target.manualkey then
-        if not rageConfig.target.enabled or not rageConfig.target.character or not valid(rageConfig.target.character) then
-            local newtarget = nearest()
-            if newtarget then
-                if rageConfig.target.enabled then stopsync() end
-                settarget(newtarget)
+    pcall(function()
+        if rageConfig.target.character and rageConfig.prediction.enabled then
+            updatevel()
+        end
+        if rageConfig.target.auto and not rageConfig.target.manualkey then
+            if not rageConfig.target.enabled or not rageConfig.target.character or not valid(rageConfig.target.character) then
+                local newtarget = nearest()
+                if newtarget then
+                    if rageConfig.target.enabled then stopsync() end
+                    settarget(newtarget)
+                end
             end
         end
-    end
-    if rageConfig.target.enabled and rageConfig.target.character then
-        if not valid(rageConfig.target.character) then
-            cleartarget()
-            return
+        if rageConfig.target.enabled and rageConfig.target.character then
+            if not valid(rageConfig.target.character) then
+                cleartarget()
+                return
+            end
+            if rageConfig.target.autoshoot and not rageConfig.target.immune then
+                autoshoot()
+            end
         end
-        if rageConfig.target.autoshoot and not rageConfig.target.immune then
-            autoshoot()
-        end
-    end
+    end)
 end)
 
 --// ============================================================
@@ -1432,24 +1564,25 @@ local textureAssets = {
     ["Line"]="",["Beam"]="rbxassetid://12781852245",["Lightning"]="rbxassetid://446111271",
     ["Heartrate"]="rbxassetid://5830549480",["Chain"]="rbxassetid://9632168658",
     ["Glitch"]="rbxassetid://8089467613",["Swirl"]="rbxassetid://5638168605",
-    ["Neon"]="rbxassetid://6361963422",["Plasma"]="rbxassetid://8993645509",["Laser"]="rbxassetid://14549123968",
+    ["Neon"]="rbxassetid://6361963422",["Plasma"]="rbxassetid://8993645509",
+    ["Laser"]="rbxassetid://14549123968",
 }
 
-local tracerEnabled   = true
-local tracerColor     = Color3.fromRGB(255,255,255)
-local tracerDuration  = 3
-local tracerSize      = 1
-local tracerFadeTime  = 0.5
-local tracerLerpSpeed = 0
-local tracerStyle     = "Line"
-local tracers         = {}
-local tracerconn      = nil
+local tracerEnabled      = true
+local tracerColor        = Color3.fromRGB(255,255,255)
+local tracerDuration     = 3
+local tracerSize         = 1
+local tracerFadeTime     = 0.5
+local tracerLerpSpeed    = 0
+local tracerStyle        = "Line"
+local tracers            = {}
+local tracerconn         = nil
 local tracerEffectHooked = false
 local lastTracerCreations = {}
-local DEDUPE_INTERVAL = 0.1
-local DEDUPE_EXPIRY   = 1.0
-local DEDUPE_PRUNE    = 120
-local frameCount      = 0
+local DEDUPE_INTERVAL    = 0.1
+local DEDUPE_EXPIRY      = 1.0
+local DEDUPE_PRUNE       = 120
+local frameCount         = 0
 
 local function getTracerDrawEnd(tr, age)
     if tracerLerpSpeed <= 0 then return tr.EndPos end
@@ -1459,171 +1592,192 @@ local function getTracerDrawEnd(tr, age)
 end
 
 local function makeLineTracer(pos3, endPos)
-    local outline = Drawing.new("Line")
-    outline.Thickness    = 4 * tracerSize
-    outline.Color        = Color3.new(0,0,0)
-    outline.Transparency = 1
-    outline.Visible      = false
-    local line = Drawing.new("Line")
-    line.Thickness    = 2 * tracerSize
-    line.Color        = tracerColor
-    line.Transparency = 1
-    line.Visible      = false
-    table.insert(tracers, {
-        IsLine=true, Outline=outline, Line=line,
-        StartPos=pos3, EndPos=endPos,
-        Lifetime=tracerDuration, FadeTime=tracerFadeTime,
-        CreatedTime=tick(),
-    })
+    pcall(function()
+        local outline = Drawing.new("Line")
+        outline.Thickness    = 4 * tracerSize
+        outline.Color        = Color3.new(0,0,0)
+        outline.Transparency = 1
+        outline.Visible      = false
+        local line = Drawing.new("Line")
+        line.Thickness    = 2 * tracerSize
+        line.Color        = tracerColor
+        line.Transparency = 1
+        line.Visible      = false
+        table.insert(tracers, {
+            IsLine=true, Outline=outline, Line=line,
+            StartPos=pos3, EndPos=endPos,
+            Lifetime=tracerDuration, FadeTime=tracerFadeTime,
+            CreatedTime=tick(),
+        })
+    end)
 end
 
 local function makeBeamTracer(pos3, endPos)
-    local a0 = Instance.new("Attachment"); a0.Parent = workspace.Terrain
-    local a1 = Instance.new("Attachment"); a1.Parent = workspace.Terrain
-    local beam = Instance.new("Beam")
-    beam.Attachment0    = a0
-    beam.Attachment1    = a1
-    beam.Color          = ColorSequence.new(tracerColor)
-    local baseW         = tracerStyle == "Laser" and 0.02 or 0.15
-    beam.Width0         = baseW * tracerSize
-    beam.Width1         = baseW * tracerSize
-    beam.Transparency   = NumberSequence.new(0)
-    beam.FaceCamera     = true
-    beam.LightEmission  = 0.8
-    beam.LightInfluence = 0.2
-    local tex = textureAssets[tracerStyle]
-    if tex and tex ~= "" then
-        beam.Texture       = tex
-        beam.TextureLength = 4
-        beam.TextureSpeed  = 1
-    end
-    beam.Parent = workspace.Terrain
-    a0.WorldPosition = pos3
-    a1.WorldPosition = endPos
-    table.insert(tracers, {
-        IsLine=false, Beam=beam, Attachment0=a0, Attachment1=a1,
-        StartPos=pos3, EndPos=endPos,
-        Lifetime=tracerDuration, FadeTime=tracerFadeTime,
-        CreatedTime=tick(),
-    })
+    pcall(function()
+        local a0 = Instance.new("Attachment"); a0.Parent = workspace.Terrain
+        local a1 = Instance.new("Attachment"); a1.Parent = workspace.Terrain
+        local beam = Instance.new("Beam")
+        beam.Attachment0    = a0
+        beam.Attachment1    = a1
+        beam.Color          = ColorSequence.new(tracerColor)
+        local baseW         = tracerStyle == "Laser" and 0.02 or 0.15
+        beam.Width0         = baseW * tracerSize
+        beam.Width1         = baseW * tracerSize
+        beam.Transparency   = NumberSequence.new(0)
+        beam.FaceCamera     = true
+        beam.LightEmission  = 0.8
+        beam.LightInfluence = 0.2
+        local tex = textureAssets[tracerStyle]
+        if tex and tex ~= "" then
+            beam.Texture       = tex
+            beam.TextureLength = 4
+            beam.TextureSpeed  = 1
+        end
+        beam.Parent = workspace.Terrain
+        a0.WorldPosition = pos3
+        a1.WorldPosition = endPos
+        table.insert(tracers, {
+            IsLine=false, Beam=beam, Attachment0=a0, Attachment1=a1,
+            StartPos=pos3, EndPos=endPos,
+            Lifetime=tracerDuration, FadeTime=tracerFadeTime,
+            CreatedTime=tick(),
+        })
+    end)
 end
 
 local function maketracer(pos3, endPos)
     if not tracerEnabled or not pos3 or not endPos then return end
-    local kx = math.floor(pos3.X*5+0.5)
-    local ky = math.floor(pos3.Y*5+0.5)
-    local kz = math.floor(pos3.Z*5+0.5)
-    local ex = math.floor(endPos.X*5+0.5)
-    local ey = math.floor(endPos.Y*5+0.5)
-    local ez = math.floor(endPos.Z*5+0.5)
-    local posKey = kx*1e9 + ky*1e6 + kz*1e3 + ex + ey*1e-3 + ez*1e-6
-    local now = tick()
-    local last = lastTracerCreations[posKey]
-    if last and (now-last) < DEDUPE_INTERVAL then return end
-    lastTracerCreations[posKey] = now
-    if tracerStyle == "Line" then
-        makeLineTracer(pos3, endPos)
-    else
-        makeBeamTracer(pos3, endPos)
-    end
+    local ok, _ = pcall(function()
+        local kx = math.floor(pos3.X*5+0.5)
+        local ky = math.floor(pos3.Y*5+0.5)
+        local kz = math.floor(pos3.Z*5+0.5)
+        local ex2 = math.floor(endPos.X*5+0.5)
+        local ey2 = math.floor(endPos.Y*5+0.5)
+        local ez2 = math.floor(endPos.Z*5+0.5)
+        local posKey = kx*1e9 + ky*1e6 + kz*1e3 + ex2 + ey2*1e-3 + ez2*1e-6
+        local now = tick()
+        local last = lastTracerCreations[posKey]
+        if last and (now-last) < DEDUPE_INTERVAL then return end
+        lastTracerCreations[posKey] = now
+        if tracerStyle == "Line" then
+            makeLineTracer(pos3, endPos)
+        else
+            makeBeamTracer(pos3, endPos)
+        end
+    end)
 end
 
 local function destroyTracer(t)
-    if t.IsLine then
-        if t.Outline then t.Outline:Remove() end
-        if t.Line    then t.Line:Remove()    end
-    else
-        if t.Beam        then t.Beam:Destroy()        end
-        if t.Attachment0 then t.Attachment0:Destroy() end
-        if t.Attachment1 then t.Attachment1:Destroy() end
-    end
+    pcall(function()
+        if t.IsLine then
+            if t.Outline then t.Outline:Remove() end
+            if t.Line    then t.Line:Remove()    end
+        else
+            if t.Beam        then t.Beam:Destroy()        end
+            if t.Attachment0 then t.Attachment0:Destroy() end
+            if t.Attachment1 then t.Attachment1:Destroy() end
+        end
+    end)
 end
 
 local function updtracers()
     if #tracers == 0 then return end
-    frameCount += 1
-    local now = tick()
-    local cam = Camera or workspace.CurrentCamera
-    local myChar = LocalPlayer.Character
-    local myPos  = myChar and myChar:FindFirstChild("HumanoidRootPart") and myChar.HumanoidRootPart.Position
-    if frameCount % DEDUPE_PRUNE == 0 then
-        for k, t in next, lastTracerCreations do
-            if (now-t) > DEDUPE_EXPIRY then lastTracerCreations[k] = nil end
-        end
-    end
-    local i = #tracers
-    while i >= 1 do
-        local tr  = tracers[i]
-        local age = now - tr.CreatedTime
-        if age >= tr.Lifetime then
-            destroyTracer(tr)
-            tracers[i] = tracers[#tracers]
-            tracers[#tracers] = nil
-        else
-            local fadeAlpha
-            local fadeStart = tr.Lifetime - tr.FadeTime
-            if age >= fadeStart then
-                fadeAlpha = 1 - math.clamp((age-fadeStart)/tr.FadeTime, 0, 1)
-            else
-                fadeAlpha = 1
+    pcall(function()
+        frameCount += 1
+        local now = tick()
+        local cam = Camera or workspace.CurrentCamera
+        local myChar = LocalPlayer.Character
+        local myPos  = myChar and myChar:FindFirstChild("HumanoidRootPart") and myChar.HumanoidRootPart.Position
+
+        if frameCount % DEDUPE_PRUNE == 0 then
+            for k, t2 in next, lastTracerCreations do
+                if (now-t2) > DEDUPE_EXPIRY then lastTracerCreations[k] = nil end
             end
-            if tr.IsLine then
-                local visible = false
-                local drawEnd = getTracerDrawEnd(tr, age)
-                local camPos  = cam and cam.CFrame.Position
-                local nearCamera = camPos and (tr.StartPos-camPos).Magnitude <= 12
-                if nearCamera or not myPos or (tr.StartPos-myPos).Magnitude > 2 then
-                    local s2, onS = worldToScreen(tr.StartPos, cam)
-                    local e2, onE = worldToScreen(drawEnd, cam)
-                    if onS and onE then
-                        local sx, sy   = s2.X, s2.Y
-                        local ex2, ey2 = e2.X, e2.Y
-                        if math.abs(sx)<20000 and math.abs(sy)<20000 and math.abs(ex2)<20000 and math.abs(ey2)<20000 then
-                            local dx  = ex2-sx
-                            local dy  = ey2-sy
-                            local len = math.sqrt(dx*dx+dy*dy)
-                            if len > 0.1 and len < 3000 then
-                                local fv2s = Vector2.new(sx, sy)
-                                local fv2e = Vector2.new(ex2, ey2)
-                                tr.Outline.From = fv2s; tr.Outline.To = fv2e
-                                tr.Outline.Transparency = fadeAlpha; tr.Outline.Visible = true
-                                tr.Line.From = fv2s; tr.Line.To = fv2e
-                                tr.Line.Transparency = fadeAlpha; tr.Line.Visible = true
-                                visible = true
+        end
+
+        local i = #tracers
+        while i >= 1 do
+            local tr  = tracers[i]
+            local age = now - tr.CreatedTime
+            if age >= tr.Lifetime then
+                destroyTracer(tr)
+                tracers[i] = tracers[#tracers]
+                tracers[#tracers] = nil
+            else
+                local fadeAlpha
+                local fadeStart = tr.Lifetime - tr.FadeTime
+                if age >= fadeStart then
+                    fadeAlpha = 1 - math.clamp((age-fadeStart)/tr.FadeTime, 0, 1)
+                else
+                    fadeAlpha = 1
+                end
+                if tr.IsLine then
+                    local visible = false
+                    local drawEnd = getTracerDrawEnd(tr, age)
+                    local camPos  = cam and cam.CFrame.Position
+                    local nearCamera = camPos and (tr.StartPos-camPos).Magnitude <= 12
+                    if nearCamera or not myPos or (tr.StartPos-myPos).Magnitude > 2 then
+                        local s2, onS = worldToScreen(tr.StartPos, cam)
+                        local e2, onE = worldToScreen(drawEnd, cam)
+                        if onS and onE and s2 and e2 then
+                            local sx, sy   = s2.X, s2.Y
+                            local ex3, ey3 = e2.X, e2.Y
+                            if math.abs(sx)<20000 and math.abs(sy)<20000 and math.abs(ex3)<20000 and math.abs(ey3)<20000 then
+                                local dx  = ex3-sx
+                                local dy  = ey3-sy
+                                local len = math.sqrt(dx*dx+dy*dy)
+                                if len > 0.1 and len < 3000 then
+                                    tr.Outline.From = Vector2.new(sx, sy)
+                                    tr.Outline.To   = Vector2.new(ex3, ey3)
+                                    tr.Outline.Transparency = fadeAlpha
+                                    tr.Outline.Visible = true
+                                    tr.Line.From = Vector2.new(sx, sy)
+                                    tr.Line.To   = Vector2.new(ex3, ey3)
+                                    tr.Line.Transparency = fadeAlpha
+                                    tr.Line.Visible = true
+                                    visible = true
+                                end
                             end
                         end
                     end
+                    if not visible then
+                        tr.Outline.Visible = false
+                        tr.Line.Visible    = false
+                    end
+                else
+                    local drawEnd = getTracerDrawEnd(tr, age)
+                    if tr.Attachment0 then tr.Attachment0.WorldPosition = tr.StartPos end
+                    if tr.Attachment1 then tr.Attachment1.WorldPosition = drawEnd end
+                    tr.Beam.Transparency = NumberSequence.new(1-fadeAlpha)
                 end
-                if not visible then
-                    tr.Outline.Visible = false
-                    tr.Line.Visible    = false
-                end
-            else
-                local drawEnd = getTracerDrawEnd(tr, age)
-                if tr.Attachment0 then tr.Attachment0.WorldPosition = tr.StartPos end
-                if tr.Attachment1 then tr.Attachment1.WorldPosition = drawEnd end
-                tr.Beam.Transparency = NumberSequence.new(1-fadeAlpha)
             end
+            i -= 1
         end
-        i -= 1
-    end
+    end)
 end
 
 local function hookTracerEffect()
     if tracerEffectHooked then return end
     pcall(function()
-        local TracerEffect = require(LocalPlayer.PlayerScripts.Modules.TracerEffect)
-        local origPlay     = TracerEffect.Play
-        TracerEffect.Play  = function(self, tracerData, cfg, extraData)
+        local scripts = safeFind(LocalPlayer, "PlayerScripts")
+        if not scripts then return end
+        local mods = safeFind(scripts, "Modules")
+        if not mods then return end
+        local te = mods:FindFirstChild("TracerEffect")
+        if not te then return end
+        local TracerEffect = require(te)
+        if not TracerEffect or not TracerEffect.Play then return end
+        local origPlay = TracerEffect.Play
+        TracerEffect.Play = function(self, tracerData, cfg2, extraData)
             if tracerEnabled and tracerData and tracerData.IsLocal and tracerData.RaycastResults then
                 local mPos = muzzlepos()
                 if mPos then
                     for _, hit in ipairs(tracerData.RaycastResults) do
-                        if hit.Position then maketracer(mPos, hit.Position) end
+                        if hit.Position then pcall(maketracer, mPos, hit.Position) end
                     end
                 end
             end
-            return origPlay(self, tracerData, cfg, extraData)
+            return origPlay(self, tracerData, cfg2, extraData)
         end
         tracerEffectHooked = true
     end)
@@ -1655,49 +1809,40 @@ ScreenGui.DisplayOrder    = 999
 ScreenGui.IgnoreGuiInset  = true
 ScreenGui.Parent          = PlayerGui
 
---// Theme
 local Theme = {
-    Background   = Color3.fromRGB(12,12,18),
-    Secondary    = Color3.fromRGB(18,18,28),
-    Accent       = Color3.fromRGB(99,102,241),
-    AccentHover  = Color3.fromRGB(129,132,255),
-    AccentDark   = Color3.fromRGB(67,70,180),
-    Text         = Color3.fromRGB(240,240,255),
-    TextDim      = Color3.fromRGB(140,140,170),
-    Success      = Color3.fromRGB(34,197,94),
-    Danger       = Color3.fromRGB(239,68,68),
-    Warning      = Color3.fromRGB(234,179,8),
-    Border       = Color3.fromRGB(40,40,60),
-    SliderBg     = Color3.fromRGB(30,30,45),
-    ToggleOff    = Color3.fromRGB(50,50,70),
-    ToggleOn     = Color3.fromRGB(99,102,241),
-    TabActive    = Color3.fromRGB(99,102,241),
-    TabInactive  = Color3.fromRGB(25,25,38),
+    Background  = Color3.fromRGB(12,12,18),
+    Secondary   = Color3.fromRGB(18,18,28),
+    Accent      = Color3.fromRGB(99,102,241),
+    AccentHover = Color3.fromRGB(129,132,255),
+    AccentDark  = Color3.fromRGB(67,70,180),
+    Text        = Color3.fromRGB(240,240,255),
+    TextDim     = Color3.fromRGB(140,140,170),
+    Success     = Color3.fromRGB(34,197,94),
+    Danger      = Color3.fromRGB(239,68,68),
+    Warning     = Color3.fromRGB(234,179,8),
+    Border      = Color3.fromRGB(40,40,60),
+    SliderBg    = Color3.fromRGB(30,30,45),
+    ToggleOff   = Color3.fromRGB(50,50,70),
+    ToggleOn    = Color3.fromRGB(99,102,241),
+    TabInactive = Color3.fromRGB(25,25,38),
 }
 
---// Main Window
 local MainFrame = Instance.new("Frame")
 MainFrame.Name             = "MainFrame"
-MainFrame.Size             = UDim2.new(0,620,0,440)
-MainFrame.Position         = UDim2.new(0.5,-310,0.5,-220)
+MainFrame.Size             = UDim2.new(0,0,0,0)
+MainFrame.Position         = UDim2.new(0.5,0,0.5,0)
 MainFrame.BackgroundColor3 = Theme.Background
 MainFrame.BorderSizePixel  = 0
 MainFrame.ClipsDescendants = true
 MainFrame.ZIndex           = 10
 MainFrame.Parent           = ScreenGui
-MainFrame.Size             = UDim2.new(0,0,0,0)
-MainFrame.Position         = UDim2.new(0.5,0,0.5,0)
-
-local MainCorner = Instance.new("UICorner")
-MainCorner.CornerRadius = UDim.new(0,16)
-MainCorner.Parent       = MainFrame
+Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0,16)
 
 local MainStroke = Instance.new("UIStroke")
 MainStroke.Color     = Theme.Border
 MainStroke.Thickness = 1
 MainStroke.Parent    = MainFrame
 
---// Top Bar
 local TopBar = Instance.new("Frame")
 TopBar.Name             = "TopBar"
 TopBar.Size             = UDim2.new(1,0,0,50)
@@ -1705,10 +1850,7 @@ TopBar.BackgroundColor3 = Theme.Secondary
 TopBar.BorderSizePixel  = 0
 TopBar.ZIndex           = 11
 TopBar.Parent           = MainFrame
-
-local TopBarCorner = Instance.new("UICorner")
-TopBarCorner.CornerRadius = UDim.new(0,16)
-TopBarCorner.Parent       = TopBar
+Instance.new("UICorner", TopBar).CornerRadius = UDim.new(0,16)
 
 local TopBarFix = Instance.new("Frame")
 TopBarFix.Size             = UDim2.new(1,0,0.5,0)
@@ -1787,7 +1929,6 @@ MinBtn.ZIndex           = 12
 MinBtn.Parent           = TopBar
 Instance.new("UICorner", MinBtn).CornerRadius = UDim.new(0,8)
 
---// Tab Bar
 local TabBar = Instance.new("Frame")
 TabBar.Name             = "TabBar"
 TabBar.Size             = UDim2.new(0,150,1,-50)
@@ -1798,22 +1939,18 @@ TabBar.ZIndex           = 11
 TabBar.Parent           = MainFrame
 
 local TabList = Instance.new("UIListLayout")
-TabList.SortOrder           = Enum.SortOrder.LayoutOrder
-TabList.Padding             = UDim.new(0,4)
-TabList.Parent              = TabBar
+TabList.SortOrder = Enum.SortOrder.LayoutOrder
+TabList.Padding   = UDim.new(0,4)
+TabList.Parent    = TabBar
 
-local TabPadding = Instance.new("UIPadding")
-TabPadding.PaddingTop   = UDim.new(0,10)
-TabPadding.PaddingLeft  = UDim.new(0,8)
-TabPadding.PaddingRight = UDim.new(0,8)
-TabPadding.Parent       = TabBar
+local TabPadding2 = Instance.new("UIPadding")
+TabPadding2.PaddingTop   = UDim.new(0,10)
+TabPadding2.PaddingLeft  = UDim.new(0,8)
+TabPadding2.PaddingRight = UDim.new(0,8)
+TabPadding2.Parent       = TabBar
 
-local TabStroke = Instance.new("UIStroke")
-TabStroke.Color = Theme.Border
-TabStroke.Thickness = 1
-TabStroke.Parent = TabBar
+Instance.new("UIStroke", TabBar).Color = Theme.Border
 
---// Content Area
 local ContentArea = Instance.new("Frame")
 ContentArea.Name             = "ContentArea"
 ContentArea.Size             = UDim2.new(1,-150,1,-50)
@@ -1881,7 +2018,18 @@ local function CreateToggle(parent, labelText, configKey, defaultVal, callback, 
         Config[configKey] = val
         Tween(SwitchBg, {BackgroundColor3 = val and Theme.ToggleOn or Theme.ToggleOff}, 0.2)
         Tween(Knob, {Position = val and UDim2.new(0,23,0.5,-9) or UDim2.new(0,3,0.5,-9)}, 0.2)
-        if callback then callback(val) end
+        if callback then pcall(callback, val) end
+    end)
+
+    -- Touch support
+    Click.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch then
+            val = not val
+            Config[configKey] = val
+            Tween(SwitchBg, {BackgroundColor3 = val and Theme.ToggleOn or Theme.ToggleOff}, 0.2)
+            Tween(Knob, {Position = val and UDim2.new(0,23,0.5,-9) or UDim2.new(0,3,0.5,-9)}, 0.2)
+            if callback then pcall(callback, val) end
+        end
     end)
 
     Click.MouseEnter:Connect(function()
@@ -1938,7 +2086,7 @@ local function CreateSlider(parent, labelText, configKey, minVal, maxVal, suffix
     Track.Parent           = Frame
     Instance.new("UICorner", Track).CornerRadius = UDim.new(1,0)
 
-    local fillPercent = math.clamp((val - minVal) / (maxVal - minVal), 0, 1)
+    local fillPercent = math.clamp((val - minVal) / math.max(maxVal - minVal, 0.001), 0, 1)
 
     local Fill = Instance.new("Frame")
     Fill.Size             = UDim2.new(fillPercent,0,1,0)
@@ -1965,16 +2113,18 @@ local function CreateSlider(parent, labelText, configKey, minVal, maxVal, suffix
     local isDragging = false
 
     local function UpdateSlider(inputX)
-        local absPos  = Track.AbsolutePosition
-        local absSize = Track.AbsoluteSize
-        local relX    = math.clamp(inputX - absPos.X, 0, absSize.X)
-        local pct     = relX / absSize.X
-        local newVal  = math.round(minVal + (maxVal - minVal) * pct)
-        Config[configKey] = newVal
-        ValueLabel.Text   = tostring(newVal) .. (suffix or "")
-        Fill.Size         = UDim2.new(pct,0,1,0)
-        SliderKnob.Position = UDim2.new(pct,-8,0.5,-8)
-        if callback then callback(newVal) end
+        pcall(function()
+            local absPos  = Track.AbsolutePosition
+            local absSize = Track.AbsoluteSize
+            local relX    = math.clamp(inputX - absPos.X, 0, absSize.X)
+            local pct     = relX / math.max(absSize.X, 1)
+            local newVal  = math.round(minVal + (maxVal - minVal) * pct)
+            Config[configKey]   = newVal
+            ValueLabel.Text     = tostring(newVal) .. (suffix or "")
+            Fill.Size           = UDim2.new(pct,0,1,0)
+            SliderKnob.Position = UDim2.new(pct,-8,0.5,-8)
+            if callback then pcall(callback, newVal) end
+        end)
     end
 
     local ClickZone = Instance.new("TextButton")
@@ -1987,10 +2137,9 @@ local function CreateSlider(parent, labelText, configKey, minVal, maxVal, suffix
     ClickZone.MouseButton1Down:Connect(function(x)
         isDragging = true
         UpdateSlider(x)
-        Tween(SliderKnob, {Size=UDim2.new(0,20,0,20), Position=UDim2.new(SliderKnob.Position.X.Scale,-10,0.5,-10)}, 0.1)
+        Tween(SliderKnob, {Size=UDim2.new(0,20,0,20)}, 0.1)
     end)
 
-    -- Touch support for mobile
     ClickZone.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Touch then
             isDragging = true
@@ -2015,11 +2164,9 @@ local function CreateSlider(parent, labelText, configKey, minVal, maxVal, suffix
         end
     end)
     UserInputService.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            if isDragging then
-                isDragging = false
-                Tween(SliderKnob, {Size=UDim2.new(0,16,0,16)}, 0.1)
-            end
+        if input.UserInputType == Enum.UserInputType.MouseButton1 and isDragging then
+            isDragging = false
+            Tween(SliderKnob, {Size=UDim2.new(0,16,0,16)}, 0.1)
         end
     end)
 
@@ -2031,7 +2178,6 @@ end
 
 local function CreateButton(parent, labelText, callback, color, layoutOrder)
     local BtnColor = color or Theme.Accent
-
     local Btn = Instance.new("TextButton")
     Btn.Size             = UDim2.new(1,-20,0,40)
     Btn.BackgroundColor3 = BtnColor
@@ -2054,19 +2200,21 @@ local function CreateButton(parent, labelText, callback, color, layoutOrder)
     Instance.new("UICorner", RippleCont).CornerRadius = UDim.new(0,10)
 
     Btn.MouseButton1Click:Connect(function()
-        local ripple = Instance.new("Frame")
-        ripple.Size             = UDim2.new(0,0,0,0)
-        ripple.AnchorPoint      = Vector2.new(0.5,0.5)
-        ripple.Position         = UDim2.new(0.5,0,0.5,0)
-        ripple.BackgroundColor3 = Color3.fromRGB(255,255,255)
-        ripple.BackgroundTransparency = 0.7
-        ripple.BorderSizePixel  = 0
-        ripple.ZIndex           = 14
-        ripple.Parent           = RippleCont
-        Instance.new("UICorner", ripple).CornerRadius = UDim.new(1,0)
-        Tween(ripple, {Size=UDim2.new(2,0,2,0), BackgroundTransparency=1}, 0.4)
-        task.delay(0.4, function() ripple:Destroy() end)
-        if callback then callback() end
+        pcall(function()
+            local ripple = Instance.new("Frame")
+            ripple.Size             = UDim2.new(0,0,0,0)
+            ripple.AnchorPoint      = Vector2.new(0.5,0.5)
+            ripple.Position         = UDim2.new(0.5,0,0.5,0)
+            ripple.BackgroundColor3 = Color3.fromRGB(255,255,255)
+            ripple.BackgroundTransparency = 0.7
+            ripple.BorderSizePixel  = 0
+            ripple.ZIndex           = 14
+            ripple.Parent           = RippleCont
+            Instance.new("UICorner", ripple).CornerRadius = UDim.new(1,0)
+            Tween(ripple, {Size=UDim2.new(2,0,2,0), BackgroundTransparency=1}, 0.4)
+            task.delay(0.4, function() pcall(function() ripple:Destroy() end) end)
+        end)
+        if callback then pcall(callback) end
     end)
 
     Btn.MouseEnter:Connect(function()
@@ -2081,7 +2229,6 @@ local function CreateButton(parent, labelText, callback, color, layoutOrder)
     Btn.MouseButton1Up:Connect(function()
         Tween(Btn, {BackgroundColor3=Theme.AccentHover}, 0.08)
     end)
-
     return Btn
 end
 
@@ -2091,7 +2238,6 @@ local function CreateSection(parent, text, layoutOrder)
     Frame.BackgroundTransparency = 1
     Frame.LayoutOrder        = layoutOrder or 0
     Frame.Parent             = parent
-
     local Label = Instance.new("TextLabel")
     Label.Size               = UDim2.new(1,0,1,0)
     Label.BackgroundTransparency = 1
@@ -2102,7 +2248,6 @@ local function CreateSection(parent, text, layoutOrder)
     Label.TextXAlignment     = Enum.TextXAlignment.Left
     Label.ZIndex             = 12
     Label.Parent             = Frame
-
     return Frame
 end
 
@@ -2154,11 +2299,7 @@ local function CreateDropdown(parent, labelText, configKey, options, callback, l
     DropFrame.Visible          = false
     DropFrame.Parent           = Frame
     Instance.new("UICorner", DropFrame).CornerRadius = UDim.new(0,8)
-
-    local DStroke = Instance.new("UIStroke")
-    DStroke.Color = Theme.Border
-    DStroke.Thickness = 1
-    DStroke.Parent = DropFrame
+    Instance.new("UIStroke", DropFrame).Color = Theme.Border
 
     local DList = Instance.new("UIListLayout")
     DList.SortOrder = Enum.SortOrder.LayoutOrder
@@ -2170,7 +2311,7 @@ local function CreateDropdown(parent, labelText, configKey, options, callback, l
     DPad.PaddingBottom = UDim.new(0,3)
     DPad.PaddingLeft   = UDim.new(0,3)
     DPad.PaddingRight  = UDim.new(0,3)
-    DPad.Parent = DropFrame
+    DPad.Parent        = DropFrame
 
     for i, option in ipairs(options) do
         local OptBtn = Instance.new("TextButton")
@@ -2197,9 +2338,8 @@ local function CreateDropdown(parent, labelText, configKey, options, callback, l
                     TweenQuick(child, {BackgroundColor3 = child.Text == option and Theme.Accent or Color3.fromRGB(25,25,40)})
                 end
             end
-            if callback then callback(option) end
+            if callback then pcall(callback, option) end
         end)
-
         OptBtn.MouseEnter:Connect(function()
             if OptBtn.Text ~= currentVal then
                 TweenQuick(OptBtn, {BackgroundColor3=Color3.fromRGB(35,35,55)})
@@ -2225,8 +2365,8 @@ end
 --//  TAB SYSTEM
 --// ============================================================
 
-local TabsData   = {}
-local ActiveTab  = nil
+local TabsData  = {}
+local ActiveTab = nil
 
 local function CreateTab(name, icon)
     local TabBtn = Instance.new("TextButton")
@@ -2242,9 +2382,9 @@ local function CreateTab(name, icon)
     TabBtn.Parent           = TabBar
     Instance.new("UICorner", TabBtn).CornerRadius = UDim.new(0,10)
 
-    local TabPad2 = Instance.new("UIPadding")
-    TabPad2.PaddingLeft = UDim.new(0,12)
-    TabPad2.Parent      = TabBtn
+    local tp2 = Instance.new("UIPadding")
+    tp2.PaddingLeft = UDim.new(0,12)
+    tp2.Parent      = TabBtn
 
     local ActiveBar = Instance.new("Frame")
     ActiveBar.Size             = UDim2.new(0,3,0.6,0)
@@ -2269,17 +2409,17 @@ local function CreateTab(name, icon)
     TabContent.ZIndex              = 12
     TabContent.Parent              = ContentArea
 
-    local ContentList = Instance.new("UIListLayout")
-    ContentList.SortOrder = Enum.SortOrder.LayoutOrder
-    ContentList.Padding   = UDim.new(0,6)
-    ContentList.Parent    = TabContent
+    local CList = Instance.new("UIListLayout")
+    CList.SortOrder = Enum.SortOrder.LayoutOrder
+    CList.Padding   = UDim.new(0,6)
+    CList.Parent    = TabContent
 
-    local ContentPad = Instance.new("UIPadding")
-    ContentPad.PaddingTop    = UDim.new(0,12)
-    ContentPad.PaddingLeft   = UDim.new(0,10)
-    ContentPad.PaddingRight  = UDim.new(0,10)
-    ContentPad.PaddingBottom = UDim.new(0,12)
-    ContentPad.Parent        = TabContent
+    local CPad = Instance.new("UIPadding")
+    CPad.PaddingTop    = UDim.new(0,12)
+    CPad.PaddingLeft   = UDim.new(0,10)
+    CPad.PaddingRight  = UDim.new(0,10)
+    CPad.PaddingBottom = UDim.new(0,12)
+    CPad.Parent        = TabContent
 
     local tabData = {Button=TabBtn, Content=TabContent, ActiveBar=ActiveBar, Name=name}
 
@@ -2315,226 +2455,132 @@ local function CreateTab(name, icon)
     return TabContent
 end
 
---// ============================================================
---//  BUILD TABS
---// ============================================================
-
+--// BUILD TABS
 local AimbotTab   = CreateTab("Aimbot",   "🎯")
 local AntiAimTab  = CreateTab("Anti Aim", "🔄")
 local RagebotTab  = CreateTab("Ragebot",  "💥")
 local TracerTab   = CreateTab("Tracers",  "✨")
 local ConfigTab   = CreateTab("Config",   "💾")
 
---// ============================================================
---//  AIMBOT TAB CONTENTS
---// ============================================================
-
+--// AIMBOT TAB
 CreateSection(AimbotTab, "AIMBOT", 1)
-
 CreateToggle(AimbotTab, "Enable Aimbot", "AimbotEnabled", false, function(v)
     aimbot.enabled = v
     aimbot.masterEnabled = v
     updaimbot()
 end, 2)
-
 CreateDropdown(AimbotTab, "Key Mode", "AimbotKeyMode",
     isMobile and {"always"} or {"toggle","hold","always"},
-    function(v)
-        aimbot.keyMode = v
-        if v == "always" then
-            aimbot.enabled = aimbot.masterEnabled
-            updaimbot()
-        end
-    end, 3)
-
+    function(v) aimbot.keyMode = v end, 3)
 CreateDropdown(AimbotTab, "Target Part", "AimbotTargetPart",
     {"Head","HumanoidRootPart","UpperTorso","LowerTorso","Closest","Random"},
     function(v) aimbot.targetPart = v end, 4)
-
 CreateDropdown(AimbotTab, "Aim Curve", "AimbotCurve",
     {"Linear","Instant","Expo","EaseIn","EaseOut","EaseInOut","Cubic"},
     function(v) aimbot.aimCurve = v end, 5)
-
 CreateSlider(AimbotTab, "FOV Radius", "AimbotFOV", 10, 800, " px", function(v)
-    aimbot.fovRadius = v
-end, 6)
-
+    aimbot.fovRadius = v end, 6)
 CreateSlider(AimbotTab, "Smoothness", "AimbotSmoothing", 1, 20, "x", function(v)
-    aimbot.smoothness = v
-end, 7)
-
+    aimbot.smoothness = v end, 7)
 CreateToggle(AimbotTab, "Show FOV Circle", "AimbotShowFOV", false, function(v)
     aimbot.showFov = v
     aimbotFOVContainer.Visible = v
 end, 8)
-
 CreateToggle(AimbotTab, "Follow Muzzle", "AimbotFollowMuzzle", false, function(v)
-    aimbot.followMuzzle = v
-end, 9)
-
-CreateSection(AimbotTab, "FOV CIRCLE STYLE", 10)
-
+    aimbot.followMuzzle = v end, 9)
+CreateSection(AimbotTab, "FOV STYLE", 10)
 CreateToggle(AimbotTab, "Filled FOV", "FOVFilledEnabled", false, function(v)
     aimbotFOVCfg.FilledEnabled = v
     aimbotFOVFill.Visible = v
 end, 11)
-
 CreateToggle(AimbotTab, "Animated Fill", "FOVAnimated", false, function(v)
-    aimbotFOVCfg.FilledAnimated = v
-end, 12)
-
+    aimbotFOVCfg.FilledAnimated = v end, 12)
 CreateToggle(AimbotTab, "Spin", "FOVSpin", false, function(v)
-    aimbotFOVCfg.SpinOn = v
-end, 13)
-
+    aimbotFOVCfg.SpinOn = v end, 13)
 CreateSlider(AimbotTab, "Outline Thickness", "FOVOutlineThickness", 1, 5, "", function(v)
     aimbotFOVStroke.Thickness = v
     aimbotFOVCfg.OutlineThickness = v
 end, 14)
 
---// ============================================================
---//  ANTI AIM TAB CONTENTS
---// ============================================================
-
+--// ANTI AIM TAB
 CreateSection(AntiAimTab, "ANTI AIM", 1)
-
 CreateToggle(AntiAimTab, "Enable Anti Aim", "AntiAimEnabled", false, function(v)
     antiAimSettings.enabled = v
     if not v then flushAntiAimState() end
 end, 2)
-
 CreateDropdown(AntiAimTab, "Yaw Type", "AntiAimYaw",
-    {"none","jitter","spinbot","random"},
-    function(v) antiAimSettings.yawtype = v end, 3)
-
+    {"none","jitter","spinbot","random"}, function(v) antiAimSettings.yawtype = v end, 3)
 CreateDropdown(AntiAimTab, "Pitch Type", "AntiAimPitch",
-    {"none","jitter","spinbot","random"},
-    function(v) antiAimSettings.pitchtype = v end, 4)
-
+    {"none","jitter","spinbot","random"}, function(v) antiAimSettings.pitchtype = v end, 4)
 CreateDropdown(AntiAimTab, "Angle/Roll", "AntiAimAngle",
-    {"none","tilt 45","tilt 90","upside down","custom"},
-    function(v) antiAimSettings.angletype = v end, 5)
-
+    {"none","tilt 45","tilt 90","upside down","custom"}, function(v) antiAimSettings.angletype = v end, 5)
 CreateSlider(AntiAimTab, "Custom Angle", "AntiAimCustomAngle", 0, 360, "°", function(v)
-    antiAimSettings.customangle = v
-end, 6)
-
+    antiAimSettings.customangle = v end, 6)
 CreateSlider(AntiAimTab, "Min Speed", "AntiAimMinSpeed", 1, 100, "", function(v)
-    antiAimSettings.minspeed = v
-end, 7)
-
+    antiAimSettings.minspeed = v end, 7)
 CreateSlider(AntiAimTab, "Max Speed", "AntiAimMaxSpeed", 1, 100, "", function(v)
-    antiAimSettings.maxspeed = v
-end, 8)
-
+    antiAimSettings.maxspeed = v end, 8)
 CreateSlider(AntiAimTab, "Min Angle", "AntiAimMinAngle", 0, 180, "°", function(v)
-    antiAimSettings.minangle = v
-end, 9)
-
+    antiAimSettings.minangle = v end, 9)
 CreateSlider(AntiAimTab, "Max Angle", "AntiAimMaxAngle", 0, 180, "°", function(v)
-    antiAimSettings.maxangle = v
-end, 10)
-
+    antiAimSettings.maxangle = v end, 10)
 CreateToggle(AntiAimTab, "Random Angle", "AntiAimRandom", false, function(v)
-    antiAimSettings.randomangle = v
-end, 11)
-
+    antiAimSettings.randomangle = v end, 11)
 CreateToggle(AntiAimTab, "Underground", "AntiAimUnderground", false, function(v)
     underground_enabled = v
     getgenv().InstanceUndergroundEnabled = v
     if not v then underground_oldpos = nil end
 end, 12)
 
---// ============================================================
---//  RAGEBOT TAB CONTENTS
---// ============================================================
-
+--// RAGEBOT TAB
 CreateSection(RagebotTab, "RAGEBOT", 1)
-
 CreateToggle(RagebotTab, "Enable Ragebot", "RagebotEnabled", false, function(v)
     rageConfig.target.rageMasterOn = v
     if not v then cleartarget() end
 end, 2)
-
 CreateToggle(RagebotTab, "Auto Target", "RagebotAuto", false, function(v)
-    rageConfig.target.auto = v
-end, 3)
-
+    rageConfig.target.auto = v end, 3)
 CreateToggle(RagebotTab, "Auto Shoot", "RagebotAutoShoot", true, function(v)
-    rageConfig.target.autoshoot = v
-end, 4)
-
+    rageConfig.target.autoshoot = v end, 4)
 CreateDropdown(RagebotTab, "Hit Part", "RagebotHitPart",
     {"Head","HumanoidRootPart","UpperTorso","Closest","Random"},
     function(v) rageConfig.target.hitpart = v end, 5)
-
 CreateDropdown(RagebotTab, "Weapon Slot", "RagebotWeaponPick",
     {"primary","secondary","melee"},
     function(v) rageConfig.target.weaponPick = v end, 6)
-
 CreateDropdown(RagebotTab, "Attack Position", "RagebotAttackPos",
-    {"default","under"},
-    function(v) rageConfig.target.attackPosition = v end, 7)
-
+    {"default","under"}, function(v) rageConfig.target.attackPosition = v end, 7)
 CreateSlider(RagebotTab, "Shoot Attempts", "RagebotShootAttempts", 1, 3, "x", function(v)
-    rageConfig.target.shootAttempts = v
-end, 8)
-
+    rageConfig.target.shootAttempts = v end, 8)
 CreateSlider(RagebotTab, "Orbit Speed", "RagebotOrbitSpeed", 100, 20000, "", function(v)
-    rageConfig.orbit.speed = v
-end, 9)
-
+    rageConfig.orbit.speed = v end, 9)
 CreateSlider(RagebotTab, "Under Offset", "RagebotUnderOffset", 1, 10, " st", function(v)
-    rageConfig.target.underOffset = v
-end, 10)
-
+    rageConfig.target.underOffset = v end, 10)
 CreateSlider(RagebotTab, "Melee Drop", "RagebotMeleeDrop", 1, 10, " st", function(v)
-    rageConfig.target.meleeFeetDrop = v
-end, 11)
-
+    rageConfig.target.meleeFeetDrop = v end, 11)
 CreateSection(RagebotTab, "PREDICTION", 12)
-
 CreateToggle(RagebotTab, "Enable Prediction", "RagebotPrediction", false, function(v)
-    rageConfig.prediction.enabled = v
-end, 13)
-
+    rageConfig.prediction.enabled = v end, 13)
 CreateSlider(RagebotTab, "Pred Multiplier", "RagebotPredMult", 1, 5, "x", function(v)
-    rageConfig.prediction.multiplier = v
-end, 14)
-
+    rageConfig.prediction.multiplier = v end, 14)
 CreateSection(RagebotTab, "VOID SPAM", 15)
-
 CreateToggle(RagebotTab, "Void Spam", "RagebotVoidSpam", false, function(v)
     rageConfig.voidspam.enabled = v
     if not v then rageConfig.voidspam.phase = nil end
 end, 16)
-
 CreateSlider(RagebotTab, "Shoot Min", "RagebotVoidShootMin", 1, 10, "s", function(v)
-    rageConfig.voidspam.shoot_min = v
-end, 17)
-
+    rageConfig.voidspam.shoot_min = v end, 17)
 CreateSlider(RagebotTab, "Shoot Max", "RagebotVoidShootMax", 1, 10, "s", function(v)
-    rageConfig.voidspam.shoot_max = v
-end, 18)
-
+    rageConfig.voidspam.shoot_max = v end, 18)
 CreateSlider(RagebotTab, "Hide Min", "RagebotVoidHideMin", 1, 10, "s", function(v)
-    rageConfig.voidspam.hide_min = v
-end, 19)
-
+    rageConfig.voidspam.hide_min = v end, 19)
 CreateSlider(RagebotTab, "Hide Max", "RagebotVoidHideMax", 1, 10, "s", function(v)
-    rageConfig.voidspam.hide_max = v
-end, 20)
+    rageConfig.voidspam.hide_max = v end, 20)
 
---// ============================================================
---//  TRACERS TAB CONTENTS
---// ============================================================
-
+--// TRACERS TAB
 CreateSection(TracerTab, "BULLET TRACERS", 1)
-
 CreateToggle(TracerTab, "Enable Tracers", "TracerEnabled", true, function(v)
-    tracerEnabled = v
-end, 2)
-
+    tracerEnabled = v end, 2)
 CreateDropdown(TracerTab, "Tracer Style", "TracerStyle",
     {"Line","Beam","Lightning","Heartrate","Chain","Glitch","Swirl","Neon","Plasma","Laser"},
     function(v)
@@ -2544,32 +2590,20 @@ CreateDropdown(TracerTab, "Tracer Style", "TracerStyle",
             tracers = {}
         end
     end, 3)
-
 CreateSlider(TracerTab, "Duration", "TracerDuration", 1, 10, "s", function(v)
-    tracerDuration = v
-end, 4)
-
+    tracerDuration = v end, 4)
 CreateSlider(TracerTab, "Size", "TracerSize", 1, 5, "x", function(v)
-    tracerSize = v
-end, 5)
-
+    tracerSize = v end, 5)
 CreateSlider(TracerTab, "Fade Time", "TracerFadeTime", 1, 5, "s", function(v)
-    tracerFadeTime = v
-end, 6)
-
+    tracerFadeTime = v end, 6)
 CreateSlider(TracerTab, "Lerp Speed", "TracerLerp", 0, 10, "", function(v)
-    tracerLerpSpeed = v
-end, 7)
-
+    tracerLerpSpeed = v end, 7)
 CreateButton(TracerTab, "🗑️  Clear All Tracers", function()
     for _, tr in ipairs(tracers) do destroyTracer(tr) end
     tracers = {}
 end, Theme.Danger, 8)
 
---// ============================================================
---//  CONFIG TAB CONTENTS
---// ============================================================
-
+--// CONFIG TAB
 CreateSection(ConfigTab, "CONFIGURATION", 1)
 
 local StatusBox = Instance.new("Frame")
@@ -2581,9 +2615,9 @@ StatusBox.Parent           = ConfigTab
 Instance.new("UICorner", StatusBox).CornerRadius = UDim.new(0,10)
 
 local SBoxStroke = Instance.new("UIStroke")
-SBoxStroke.Color = Theme.Success
+SBoxStroke.Color     = Theme.Success
 SBoxStroke.Thickness = 1
-SBoxStroke.Parent = StatusBox
+SBoxStroke.Parent    = StatusBox
 
 local ConfigStatusLabel = Instance.new("TextLabel")
 ConfigStatusLabel.Size               = UDim2.new(1,-16,1,0)
@@ -2599,20 +2633,22 @@ ConfigStatusLabel.ZIndex             = 12
 ConfigStatusLabel.Parent             = StatusBox
 
 local function SetConfigStatus(text, color)
-    ConfigStatusLabel.Text      = text
-    ConfigStatusLabel.TextColor3 = color or Theme.Success
-    SBoxStroke.Color = color or Theme.Success
+    pcall(function()
+        ConfigStatusLabel.Text       = text
+        ConfigStatusLabel.TextColor3 = color or Theme.Success
+        SBoxStroke.Color             = color or Theme.Success
+    end)
 end
 
 CreateButton(ConfigTab, "💾  Save Config", function()
     SaveConfig()
-    SetConfigStatus("✅ Config saved successfully!", Theme.Success)
+    SetConfigStatus("✅ Config saved!", Theme.Success)
     task.delay(3, function() SetConfigStatus("💾 Ready", Theme.TextDim) end)
 end, Theme.Accent, 3)
 
 CreateButton(ConfigTab, "📂  Load Config", function()
     local loaded = LoadConfig()
-    SetConfigStatus(loaded and "✅ Config loaded!" or "⚠️ No config found, using defaults.", loaded and Theme.Success or Theme.Warning)
+    SetConfigStatus(loaded and "✅ Config loaded!" or "⚠️ No config found.", loaded and Theme.Success or Theme.Warning)
     task.delay(3, function() SetConfigStatus("💾 Ready", Theme.TextDim) end)
 end, Theme.Success, 4)
 
@@ -2624,7 +2660,7 @@ end, Theme.Danger, 5)
 
 CreateSection(ConfigTab, "AUTO SAVE", 6)
 
-local autoSaveOn = false
+local autoSaveOn  = false
 local AutoSaveBtn = CreateButton(ConfigTab, "⏱  Auto Save: OFF", function() end, Theme.AccentDark, 7)
 AutoSaveBtn.MouseButton1Click:Connect(function()
     autoSaveOn = not autoSaveOn
@@ -2636,7 +2672,7 @@ AutoSaveBtn.MouseButton1Click:Connect(function()
                 task.wait(30)
                 if autoSaveOn then
                     SaveConfig()
-                    SetConfigStatus("⏱ Auto-saved at " .. os.date("%H:%M:%S"), Theme.Success)
+                    SetConfigStatus("⏱ Auto-saved " .. os.date("%H:%M:%S"), Theme.Success)
                 end
             end
         end)
@@ -2644,7 +2680,7 @@ AutoSaveBtn.MouseButton1Click:Connect(function()
 end)
 
 --// ============================================================
---//  DRAGGABLE WINDOW
+--//  DRAGGABLE + CONTROLS
 --// ============================================================
 
 local dragging      = false
@@ -2659,14 +2695,12 @@ TopBar.InputBegan:Connect(function(input)
         frameStartPos = MainFrame.Position
     end
 end)
-
 TopBar.InputEnded:Connect(function(input)
     if input.UserInputType == Enum.UserInputType.MouseButton1
     or input.UserInputType == Enum.UserInputType.Touch then
         dragging = false
     end
 end)
-
 UserInputService.InputChanged:Connect(function(input)
     if dragging and (input.UserInputType == Enum.UserInputType.MouseMovement
     or input.UserInputType == Enum.UserInputType.Touch) then
@@ -2678,45 +2712,31 @@ UserInputService.InputChanged:Connect(function(input)
     end
 end)
 
---// ============================================================
---//  CLOSE & MINIMIZE
---// ============================================================
-
 local isMinimized = false
 local fullSize    = UDim2.new(0,620,0,440)
 local miniSize    = UDim2.new(0,620,0,50)
 
 CloseBtn.MouseButton1Click:Connect(function()
-    Tween(MainFrame, {Size=UDim2.new(0,0,0,0), Position=UDim2.new(0.5,0,0.5,0)}, 0.3,
-        Enum.EasingStyle.Back, Enum.EasingDirection.In)
-    task.delay(0.3, function() ScreenGui:Destroy() end)
+    Tween(MainFrame, {Size=UDim2.new(0,0,0,0), Position=UDim2.new(0.5,0,0.5,0)}, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.In)
+    task.delay(0.35, function() pcall(function() ScreenGui:Destroy() end) end)
 end)
-
 MinBtn.MouseButton1Click:Connect(function()
     isMinimized = not isMinimized
     Tween(MainFrame, {Size = isMinimized and miniSize or fullSize}, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
     MinBtn.Text = isMinimized and "□" or "–"
 end)
 
---// ============================================================
---//  KEYBIND (PC = Insert, Mobile = always visible)
---// ============================================================
-
 UserInputService.InputBegan:Connect(function(input, gp)
     if gp then return end
     if input.KeyCode == Enum.KeyCode.Insert then
         MainFrame.Visible = not MainFrame.Visible
     end
-
-    -- Aimbot hold mode
     if not isMobile and aimbot.keyMode == "hold" and aimbot.masterEnabled then
         if input.KeyCode == Enum.KeyCode.C then
             aimbot.enabled = true
             updaimbot()
         end
     end
-
-    -- Ragebot manual key
     if input.KeyCode == Enum.KeyCode.E and Config.RagebotEnabled then
         if not rageConfig.target.enabled then
             local target = nearest()
@@ -2729,7 +2749,6 @@ UserInputService.InputBegan:Connect(function(input, gp)
         end
     end
 end)
-
 UserInputService.InputEnded:Connect(function(input, gp)
     if gp then return end
     if not isMobile and aimbot.keyMode == "hold" then
@@ -2758,16 +2777,11 @@ if isMobile then
     MobileBtn.ZIndex           = 1000
     MobileBtn.Parent           = ScreenGui
     Instance.new("UICorner", MobileBtn).CornerRadius = UDim.new(1,0)
+    Instance.new("UIStroke", MobileBtn).Color = Color3.fromRGB(255,255,255)
 
-    local MBStroke = Instance.new("UIStroke")
-    MBStroke.Color     = Color3.fromRGB(255,255,255)
-    MBStroke.Thickness = 2
-    MBStroke.Parent    = MobileBtn
-
-    -- Drag the mobile button
-    local mbDragging   = false
-    local mbDragStart  = nil
-    local mbStartPos   = nil
+    local mbDragging  = false
+    local mbDragStart = nil
+    local mbStartPos  = nil
 
     MobileBtn.InputBegan:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Touch then
@@ -2776,7 +2790,6 @@ if isMobile then
             mbStartPos  = MobileBtn.Position
         end
     end)
-
     MobileBtn.InputChanged:Connect(function(input)
         if mbDragging and input.UserInputType == Enum.UserInputType.Touch then
             local delta = Vector2.new(input.Position.X, input.Position.Y) - mbDragStart
@@ -2786,12 +2799,10 @@ if isMobile then
             )
         end
     end)
-
     MobileBtn.InputEnded:Connect(function(input)
         if input.UserInputType == Enum.UserInputType.Touch then
             local delta = Vector2.new(input.Position.X, input.Position.Y) - mbDragStart
             if delta.Magnitude < 10 then
-                -- It was a tap not a drag
                 MainFrame.Visible = not MainFrame.Visible
                 Tween(MobileBtn, {BackgroundColor3 = MainFrame.Visible and Theme.Success or Theme.Accent}, 0.2)
             end
@@ -2799,7 +2810,6 @@ if isMobile then
         end
     end)
 
-    -- Mobile always aim
     if Config.AimbotKeyMode == "always" then
         aimbot.enabled       = Config.AimbotEnabled
         aimbot.masterEnabled = Config.AimbotEnabled
@@ -2817,92 +2827,96 @@ NotifContainer.BackgroundTransparency = 1
 NotifContainer.ZIndex             = 999
 NotifContainer.Parent             = ScreenGui
 
-local NotifList = Instance.new("UIListLayout")
-NotifList.SortOrder        = Enum.SortOrder.LayoutOrder
-NotifList.VerticalAlignment = Enum.VerticalAlignment.Bottom
-NotifList.Padding          = UDim.new(0,6)
-NotifList.Parent           = NotifContainer
+local NotifList2 = Instance.new("UIListLayout")
+NotifList2.SortOrder        = Enum.SortOrder.LayoutOrder
+NotifList2.VerticalAlignment = Enum.VerticalAlignment.Bottom
+NotifList2.Padding          = UDim.new(0,6)
+NotifList2.Parent           = NotifContainer
 
-local NotifPad = Instance.new("UIPadding")
-NotifPad.PaddingBottom = UDim.new(0,10)
-NotifPad.Parent        = NotifContainer
+local NotifPad2 = Instance.new("UIPadding")
+NotifPad2.PaddingBottom = UDim.new(0,10)
+NotifPad2.Parent        = NotifContainer
 
 local notifCount = 0
 
 local function Notify(title, message, notifType, duration)
-    notifCount += 1
-    local color = notifType == "success" and Theme.Success
-        or notifType == "error"   and Theme.Danger
-        or notifType == "warning" and Theme.Warning
-        or Theme.Accent
+    pcall(function()
+        notifCount += 1
+        local color = notifType == "success" and Theme.Success
+            or notifType == "error"   and Theme.Danger
+            or notifType == "warning" and Theme.Warning
+            or Theme.Accent
 
-    local NFrame = Instance.new("Frame")
-    NFrame.Size             = UDim2.new(1,0,0,0)
-    NFrame.BackgroundColor3 = Theme.Secondary
-    NFrame.BorderSizePixel  = 0
-    NFrame.ClipsDescendants = true
-    NFrame.ZIndex           = 1000
-    NFrame.LayoutOrder      = notifCount
-    NFrame.Parent           = NotifContainer
-    Instance.new("UICorner", NFrame).CornerRadius = UDim.new(0,10)
+        local NFrame = Instance.new("Frame")
+        NFrame.Size             = UDim2.new(1,0,0,0)
+        NFrame.BackgroundColor3 = Theme.Secondary
+        NFrame.BorderSizePixel  = 0
+        NFrame.ClipsDescendants = true
+        NFrame.ZIndex           = 1000
+        NFrame.LayoutOrder      = notifCount
+        NFrame.Parent           = NotifContainer
+        Instance.new("UICorner", NFrame).CornerRadius = UDim.new(0,10)
 
-    local NAccent = Instance.new("Frame")
-    NAccent.Size             = UDim2.new(0,3,1,0)
-    NAccent.BackgroundColor3 = color
-    NAccent.BorderSizePixel  = 0
-    NAccent.ZIndex           = 1001
-    NAccent.Parent           = NFrame
+        local NAccent = Instance.new("Frame")
+        NAccent.Size             = UDim2.new(0,3,1,0)
+        NAccent.BackgroundColor3 = color
+        NAccent.BorderSizePixel  = 0
+        NAccent.ZIndex           = 1001
+        NAccent.Parent           = NFrame
 
-    local NTitle = Instance.new("TextLabel")
-    NTitle.Size               = UDim2.new(1,-16,0,20)
-    NTitle.Position           = UDim2.new(0,12,0,8)
-    NTitle.BackgroundTransparency = 1
-    NTitle.Text               = title
-    NTitle.TextColor3         = color
-    NTitle.TextSize           = 13
-    NTitle.Font               = Enum.Font.GothamBold
-    NTitle.TextXAlignment     = Enum.TextXAlignment.Left
-    NTitle.ZIndex             = 1001
-    NTitle.Parent             = NFrame
+        local NTitle = Instance.new("TextLabel")
+        NTitle.Size               = UDim2.new(1,-16,0,20)
+        NTitle.Position           = UDim2.new(0,12,0,8)
+        NTitle.BackgroundTransparency = 1
+        NTitle.Text               = title
+        NTitle.TextColor3         = color
+        NTitle.TextSize           = 13
+        NTitle.Font               = Enum.Font.GothamBold
+        NTitle.TextXAlignment     = Enum.TextXAlignment.Left
+        NTitle.ZIndex             = 1001
+        NTitle.Parent             = NFrame
 
-    local NMsg = Instance.new("TextLabel")
-    NMsg.Size               = UDim2.new(1,-16,0,18)
-    NMsg.Position           = UDim2.new(0,12,0,28)
-    NMsg.BackgroundTransparency = 1
-    NMsg.Text               = message
-    NMsg.TextColor3         = Theme.TextDim
-    NMsg.TextSize           = 12
-    NMsg.Font               = Enum.Font.Gotham
-    NMsg.TextXAlignment     = Enum.TextXAlignment.Left
-    NMsg.ZIndex             = 1001
-    NMsg.Parent             = NFrame
+        local NMsg = Instance.new("TextLabel")
+        NMsg.Size               = UDim2.new(1,-16,0,18)
+        NMsg.Position           = UDim2.new(0,12,0,28)
+        NMsg.BackgroundTransparency = 1
+        NMsg.Text               = message
+        NMsg.TextColor3         = Theme.TextDim
+        NMsg.TextSize           = 12
+        NMsg.Font               = Enum.Font.Gotham
+        NMsg.TextXAlignment     = Enum.TextXAlignment.Left
+        NMsg.ZIndex             = 1001
+        NMsg.Parent             = NFrame
 
-    local ProgBg = Instance.new("Frame")
-    ProgBg.Size             = UDim2.new(1,0,0,3)
-    ProgBg.Position         = UDim2.new(0,0,1,-3)
-    ProgBg.BackgroundColor3 = Theme.SliderBg
-    ProgBg.BorderSizePixel  = 0
-    ProgBg.ZIndex           = 1001
-    ProgBg.Parent           = NFrame
+        local ProgBg = Instance.new("Frame")
+        ProgBg.Size             = UDim2.new(1,0,0,3)
+        ProgBg.Position         = UDim2.new(0,0,1,-3)
+        ProgBg.BackgroundColor3 = Theme.SliderBg
+        ProgBg.BorderSizePixel  = 0
+        ProgBg.ZIndex           = 1001
+        ProgBg.Parent           = NFrame
 
-    local ProgFill = Instance.new("Frame")
-    ProgFill.Size             = UDim2.new(1,0,1,0)
-    ProgFill.BackgroundColor3 = color
-    ProgFill.BorderSizePixel  = 0
-    ProgFill.ZIndex           = 1002
-    ProgFill.Parent           = ProgBg
+        local ProgFill = Instance.new("Frame")
+        ProgFill.Size             = UDim2.new(1,0,1,0)
+        ProgFill.BackgroundColor3 = color
+        ProgFill.BorderSizePixel  = 0
+        ProgFill.ZIndex           = 1002
+        ProgFill.Parent           = ProgBg
 
-    Tween(NFrame, {Size=UDim2.new(1,0,0,55)}, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
-    Tween(ProgFill, {Size=UDim2.new(0,0,1,0)}, duration or 4, Enum.EasingStyle.Linear)
+        Tween(NFrame, {Size=UDim2.new(1,0,0,55)}, 0.3, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
+        Tween(ProgFill, {Size=UDim2.new(0,0,1,0)}, duration or 4, Enum.EasingStyle.Linear)
 
-    task.delay(duration or 4, function()
-        Tween(NFrame, {Size=UDim2.new(1,0,0,0), BackgroundTransparency=1}, 0.3)
-        task.delay(0.3, function() NFrame:Destroy() end)
+        task.delay(duration or 4, function()
+            pcall(function()
+                Tween(NFrame, {Size=UDim2.new(1,0,0,0), BackgroundTransparency=1}, 0.3)
+                task.delay(0.3, function() pcall(function() NFrame:Destroy() end) end)
+            end)
+        end)
     end)
 end
 
 --// ============================================================
---//  OPEN ANIMATION + STARTUP
+--//  OPEN ANIMATION
 --// ============================================================
 
 task.delay(0.1, function()
@@ -2912,24 +2926,22 @@ task.delay(0.1, function()
     }, 0.5, Enum.EasingStyle.Back, Enum.EasingDirection.Out)
 end)
 
-task.delay(0.2, function()
-    TabsData["Aimbot"].Button.MouseButton1Click:Fire()
+task.delay(0.3, function()
+    pcall(function()
+        TabsData["Aimbot"].Button.MouseButton1Click:Fire()
+    end)
 end)
 
-task.delay(0.7, function()
-    Notify("⚔ Rivals Script", "Loaded successfully! " .. (isMobile and "Tap ⚔ button to toggle." or "Press INSERT to toggle."), "success", 5)
+task.delay(0.8, function()
+    Notify("⚔ Rivals Script", "Loaded! " .. (isMobile and "Tap ⚔ to toggle." or "Press INSERT to toggle."), "success", 5)
+end)
+task.delay(1.5, function()
+    Notify("💾 Config", "Config auto-loaded.", "success", 3)
+end)
+task.delay(2.2, function()
+    Notify("🛡️ AC Bypass", "Anti-cheat bypass active.", "success", 3)
 end)
 
-task.delay(1.4, function()
-    Notify("💾 Config", "Auto-loaded your saved configuration.", "success", 3)
-end)
-
-task.delay(2.1, function()
-    Notify("🛡️ AC Bypass", "Anti-cheat bypass applied.", "success", 3)
-end)
-
-print("✅ Rivals Script Fully Loaded!")
-print("⌨️  PC: Press INSERT to toggle UI")
-print("📱 Mobile: Tap the ⚔ button")
-print("🎯 Aimbot Key (Hold): C")
-print("💥 Ragebot Manual Key: E")
+print("✅ Rivals Script Fixed & Loaded!")
+print("⌨️  PC: INSERT to toggle | Hold C = Aimbot | E = Ragebot target")
+print("📱 Mobile: Tap ⚔ button")
